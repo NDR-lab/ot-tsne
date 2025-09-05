@@ -1,0 +1,28 @@
+[project]
+name = "ne-aligned"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "contrastive-ne",
+    "jupyterlab>=4.4.6",
+    "matplotlib>=3.10.5",
+    "numba>=0.61.2",
+    "numpy>=2.2.6",
+    "pot[backend-torch]>=0.9.5",
+    "scipy>=1.16.1",
+    "torch>=2.8.0",
+    "torchvision>=0.23.0",
+    "umap-learn>=0.5.9.post2",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv.sources]
+contrastive-ne = { path = "../repos/contrastive-ne", editable = true }
