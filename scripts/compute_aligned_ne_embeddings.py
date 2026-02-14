@@ -6,31 +6,41 @@ import numpy as np
 import ot
 import time
 
+########################
+# hyperparameter start
+########################
+
 seeds = [0, 1, 2, 3 ,4]
 dataset = "gmm"
-theta = 1.0
+theta = 1
 
 tol = 1e-12
 maxIter = int(1e4)
 
 eps_times_list = [1, 10, 100]
 sparsify = "topk" # None # "topk" # None
-embd_dim = 6
+diag = False
+embd_dim = 2
 
+alignment = False
+sample_pos = None #"per_point" #None #
 
 
 init_str = "random"  # "pca" or "random"
 init_scale = 1
-
 batch_size = 2**14
-negative_samples = 5
+negative_samples = 500
 n_epochs = 200
 loss_mode = "infonce"
-alignment = True
-sample_pos = None #"per_point" #None #
+
 
 
 res_path = os.path.join("/gpfs01/berens/user/sdamrich/data/ne_aligned", dataset)
+
+
+########################
+# hyperparameter end
+########################
 
 if dataset == "gmm":
     dataset_str = dataset+f"_theta_{theta}"
@@ -70,7 +80,7 @@ for seed in seeds:
 
             P_sparse = sparsify_plan(P, mode=sparsify, k=15)
 
-            graph = get_bipartite_graph(P_sparse)
+            graph = get_bipartite_graph(P_sparse, diag=diag)
 
 
             # compute initialization
