@@ -1,7 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-def plot_aligned_embedding(embd, n0, fig_name=None, color=None, shuffle=True, seed=0, ax=None):
+# plotting utils
+
+def plot_aligned_embedding(embd, n0, s=5, color=None, shuffle=True, seed=0, ax=None):
     if ax is None:
         fig, ax = plt.subplots(figsize=(5,5))
         return_fig = True
@@ -21,8 +23,8 @@ def plot_aligned_embedding(embd, n0, fig_name=None, color=None, shuffle=True, se
     plot_color = color if color is not None else colors[dataset_mask]
 
     ax.scatter(*embd_plot.T,
-               s=5.0,
-               color=plot_color,
+               s=s,
+               c=plot_color,
                linewidth=1,
                alpha=1,
                zorder=10)
