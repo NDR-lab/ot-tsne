@@ -1,4 +1,4 @@
-from ne_aligned_utils.data import make_fig1_data
+from ne_aligned_utils.data import make_fig1_data, make_joint_gmm
 from ne_aligned_utils.utils import compute_ot_plan, sparsify_plan, get_bipartite_graph
 import os
 import cne
@@ -7,14 +7,18 @@ import ot
 import time
 
 seeds = [0, 1, 2, 3 ,4]
-dataset = "fig1"
+dataset = "gmm"
+theta = 1.0
 
 tol = 1e-12
 maxIter = int(1e4)
 
-eps_times_list = [10, 100]
+eps_times_list = [1, 10, 100]
+sparsify = "topk" # None # "topk" # None
+embd_dim = 6
 
-embd_dim = 2
+
+
 init_str = "random"  # "pca" or "random"
 init_scale = 1
 
@@ -23,14 +27,19 @@ negative_samples = 5
 n_epochs = 200
 loss_mode = "infonce"
 alignment = True
-sample_pos = "per_point"
-sparsify = None
+sample_pos = None #"per_point" #None #
+
 
 res_path = os.path.join("/gpfs01/berens/user/sdamrich/data/ne_aligned", dataset)
 
+if dataset == "gmm":
+    dataset_str = dataset+f"_theta_{theta}"
+else:
+    dataset_str = dataset
+
 for seed in seeds:
     for eps_times in eps_times_list:
-        filename = f"{dataset}_seed_{seed}_epstimes_{eps_times}_sparsify_{sparsify}_dim_{embd_dim}_init_{init_str}" + \
+        filename = f"{dataset_str}_seed_{seed}_epstimes_{eps_times}_sparsify_{sparsify}_dim_{embd_dim}_init_{init_str}" + \
                                 f"_scale_{init_scale}_bs_{batch_size}_m_{negative_samples}_epochs_{n_epochs}" + \
                                 f"_loss_{loss_mode}_align_{alignment}_sample_pos_{sample_pos}.npz"
 
@@ -47,6 +56,8 @@ for seed in seeds:
             # make data
             if dataset == "fig1":
                 x0, x1 = make_fig1_data(seed=seed)
+            elif dataset == "gmm":
+                x0, x1 = make_joint_gmm(seed=seed, theta=theta)
             else:
                 raise NotImplementedError
 
@@ -78,7 +89,7 @@ for seed in seeds:
                                loss_mode=loss_mode,
                                alignment=alignment,
                                data_on_gpu=True,
-                               sample_pos=None)
+                               sample_pos=sample_pos)
             before_fit = time.time()
             embd = embedder.fit_transform(np.concatenate([x0, x1], axis=0), graph=graph, init=init)
             after_fit = time.time()
