@@ -1,8 +1,32 @@
 import ot
 import scipy.sparse as sp
 import numpy as np
+from importlib.resources import files
+from ne_aligned_utils.transport_plan_sparsify import sparsify_transport_plan
 
 # utilities
+
+def get_path(path_type):
+    # util for reading in paths from file
+    with files(__package__).joinpath("paths").open("rb") as file:
+        lines = file.readlines()
+
+    lines = [line.decode('ascii').split(" ") for line in lines]
+    path_dict = {line[0]: " ".join(line[1:]).strip("\n") for line in lines}
+
+    if path_type == "data":
+        try:
+            return path_dict["data_path"]
+        except KeyError:
+            print("There is no path 'data_path'.")
+
+    elif path_type == "figures":
+        try:
+            return path_dict["fig_path"]
+        except KeyError:
+            print("There is no path 'fig_path'.")
+
+
 
 def compute_ot_plan(x0, x1, eps_times=1, tol=1e-12, maxIter=int(1e4)):
     dist = ot.dist(x0, x1)  # this is already the squared Euclidean distance
@@ -19,7 +43,27 @@ def compute_ot_plan(x0, x1, eps_times=1, tol=1e-12, maxIter=int(1e4)):
     P = ot.sinkhorn(a, b, dist, reg=eps, numItermax=maxIter, stopThr=tol)
     return P
 
-def sparsify_plan(P, mode=None, k=15):
+def _plan_stats(P_sparse, method, percentage=None):
+    nnz = int(np.count_nonzero(P_sparse))
+    return {
+        "nnz": nnz,
+        "density": float(nnz / P_sparse.size),
+        "retained_mass_before_renorm": float(P_sparse.sum()),
+        "method": method,
+        "percentage": None if percentage is None else float(percentage),
+    }
+
+
+def sparsify_plan(
+    P,
+    mode=None,
+    k=15,
+    percentage=None,
+    ensure_nonempty=True,
+    renormalize=True,
+    return_stats=False,
+    below_top_scale_exponent=2.0,
+):
     if mode is None:
         P_sparse = P
 
@@ -40,10 +84,29 @@ def sparsify_plan(P, mode=None, k=15):
         for j in range(P.shape[1]):
             idx = np.argpartition(P[:, j], -k)[-k:]
             P_sparse[idx, j] = P[idx, j]
+
+    elif mode in {
+        "percentage_neighbors",
+        "percentage_mass",
+        "percentage_below_top",
+    }:
+        if percentage is None:
+            raise ValueError(f"percentage must be provided when mode='{mode}'.")
+        return sparsify_transport_plan(
+            P,
+            method=mode,
+            percentage=percentage,
+            ensure_nonempty=ensure_nonempty,
+            renormalize=renormalize,
+            return_stats=return_stats,
+            below_top_scale_exponent=below_top_scale_exponent,
+        )
     else:
 
         raise NotImplementedError
 
+    if return_stats:
+        return P_sparse, _plan_stats(P_sparse, method=mode, percentage=percentage)
     return P_sparse
 
 def get_eot(P, t=0, returnS=False):
@@ -87,10 +150,10 @@ def sparsify_affinities(a, n0, n1, k=15, symmetric=True):
 
     a_sparse = np.zeros_like(a)
 
-    a_sparse[:n0, :n0][*idx_upper_diag] = 1
-    a_sparse[:n0, n0:][*idx_upper_right] = 1
-    a_sparse[n0:, :n0][*idx_lower_left] = 1
-    a_sparse[n0:, n0:][*idx_lower_diag] = 1
+    a_sparse[:n0, :n0][idx_upper_diag] = 1
+    a_sparse[:n0, n0:][idx_upper_right] = 1
+    a_sparse[n0:, :n0][idx_lower_left] = 1
+    a_sparse[n0:, n0:][idx_lower_diag] = 1
 
     if symmetric:
         a_sparse = np.maximum(a_sparse, a_sparse.T)
@@ -99,5 +162,3 @@ def sparsify_affinities(a, n0, n1, k=15, symmetric=True):
 
     a_sparse /= a_sparse.sum()
     return a_sparse
-
-

@@ -118,10 +118,10 @@ def load_atac(res_path, return_meta=False):
     if not return_meta:
         return data0, data1
 
-    cell_type_names = np.load(os.path.join(data_path, "cell_type_names.npy"))
+    cell_type_names = np.load(os.path.join(data_path, "cell_type_names.npy"), allow_pickle=True)
     labels0 = np.load(os.path.join(data_path, "labels1.npy"))
     labels1 = np.load(os.path.join(data_path, "labels2.npy"))
-    dataset_names = np.load(os.path.join(data_path, "dataset_names.npy"))
+    dataset_names = np.load(os.path.join(data_path, "dataset_names.npy"), allow_pickle=True)
 
     return data0, data1, cell_type_names, labels0, labels1, dataset_names
 
@@ -136,10 +136,10 @@ def load_nCoV(res_path, return_meta=False):
     if not return_meta:
         return data0, data1
 
-    cell_type_names = np.load(os.path.join(data_path, "cell_type_names.npy"))
+    cell_type_names = np.load(os.path.join(data_path, "cell_type_names.npy"), allow_pickle=True)
     labels0 = np.load(os.path.join(data_path, "labels1.npy"))
     labels1 = np.load(os.path.join(data_path, "labels2.npy"))
-    dataset_names = np.load(os.path.join(data_path, "dataset_names.npy"))
+    dataset_names = np.load(os.path.join(data_path, "dataset_names.npy"), allow_pickle=True)
 
     return data0, data1, cell_type_names, labels0, labels1, dataset_names
 
@@ -161,7 +161,6 @@ def load_yao_10x_purple(res_path, seed=0, subsample_size=5000):
     #perm1 = np.random.permutation(data1.shape[0])[:subsample_size]
 
     #return data0[perm0], data1[perm1]
-
 
 
 

@@ -13,6 +13,107 @@ import re
 # performance metrics
 
 
+def _compute_self_knn_indices(embd, metadata, k, metadata_name="metadata"):
+    """
+    Validate generic kNN metric inputs and return self-excluded neighbor indices.
+
+    The helper requests ``effective_k + 1`` neighbors so each point can drop its own
+    index explicitly before scoring. If fewer than two samples are provided, it returns
+    an empty neighbor matrix and effective_k = 0.
+    """
+    embd = np.asarray(embd, dtype=float)
+    metadata = np.asarray(metadata)
+
+    if embd.ndim != 2:
+        raise ValueError(f"embd must be a 2D array, got shape {embd.shape!r}.")
+    if metadata.ndim != 1:
+        raise ValueError(f"{metadata_name} must be a 1D array, got shape {metadata.shape!r}.")
+    if embd.shape[0] != metadata.shape[0]:
+        raise ValueError(
+            f"embd and {metadata_name} must have the same number of samples, "
+            f"got {embd.shape[0]} and {metadata.shape[0]}."
+        )
+
+    if isinstance(k, (bool, np.bool_)) or not np.isscalar(k):
+        raise ValueError(f"k must be a positive integer, got {k!r}.")
+    try:
+        k_int = int(k)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"k must be a positive integer, got {k!r}.") from exc
+    if k_int != k or k_int < 1:
+        raise ValueError(f"k must be a positive integer, got {k!r}.")
+    k = k_int
+
+    n_samples = embd.shape[0]
+    effective_k = min(k, max(n_samples - 1, 0))
+    if effective_k == 0:
+        return metadata, np.empty((n_samples, 0), dtype=int), effective_k
+
+    n_neighbors = min(n_samples, effective_k + 1)
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm='auto').fit(embd)
+    candidate_indices = nbrs.kneighbors(embd, return_distance=False)
+
+    neighbor_indices = np.empty((n_samples, effective_k), dtype=int)
+    for row_idx, row_neighbors in enumerate(candidate_indices):
+        filtered_neighbors = row_neighbors[row_neighbors != row_idx]
+        if filtered_neighbors.shape[0] < effective_k:
+            raise RuntimeError(
+                "Could not exclude the query point from its own neighborhood. "
+                f"Row {row_idx} only retained {filtered_neighbors.shape[0]} neighbors."
+            )
+        neighbor_indices[row_idx] = filtered_neighbors[:effective_k]
+
+    return metadata, neighbor_indices, effective_k
+
+
+def compute_knn_same_cell_type_fraction(embd, labels, k=50):
+    """
+    Compute the mean fraction of each point's k nearest neighbors that share its label.
+
+    :param embd: embedding coordinates with shape (n_samples, n_dims)
+    :param labels: 1D cell-type label vector with length n_samples
+    :param k: number of nearest neighbors considered per point
+    :return: Mean same-cell-type kNN fraction in [0, 1]
+    """
+    labels, neighbor_indices, effective_k = _compute_self_knn_indices(
+        embd,
+        labels,
+        k,
+        metadata_name="labels",
+    )
+    if effective_k == 0:
+        return 0.0
+
+    same_label = labels[neighbor_indices] == labels[:, None]
+    return float(same_label.mean(axis=1).mean())
+
+
+def compute_knn_other_batch_fraction(embd, batch_ids, k=50):
+    """
+    Compute the mean fraction of each point's k nearest neighbors that come from another batch.
+
+    This metric is generic on the cells passed in. For datasets where some cell types appear in
+    only one batch, filter to a shared-label subset before calling this function if you want a
+    batch-mixing score that is not penalized by missing cell types.
+
+    :param embd: embedding coordinates with shape (n_samples, n_dims)
+    :param batch_ids: 1D batch-id vector with length n_samples
+    :param k: number of nearest neighbors considered per point
+    :return: Mean other-batch kNN fraction in [0, 1]
+    """
+    batch_ids, neighbor_indices, effective_k = _compute_self_knn_indices(
+        embd,
+        batch_ids,
+        k,
+        metadata_name="batch_ids",
+    )
+    if effective_k == 0:
+        return 0.0
+
+    other_batch = batch_ids[neighbor_indices] != batch_ids[:, None]
+    return float(other_batch.mean(axis=1).mean())
+
+
 
 def intersection_over_union(graphs):
     """
@@ -108,16 +209,93 @@ def compute_cross_concordance(x0, x1, y0, y1, k=50):
     return intersection_over_union(knn_graphs)
 
 
+def compute_foscttm(x0_ref, x1_ref, y0, y1):
+    """
+    Computes FOSCTTM (Fraction of Samples Closer Than the True Match)
+    with nearest-neighbor matching.
+    For each point in one modality, the true match in the other modality
+    is defined as nearest neighbor in latent space. The score is computed
+    in embedding space in both directions and averaged symmetrically.
+
+    :param x0_ref: latent/clean positions of modality 0 (n0 x d0)
+    :param x1_ref: latent/clean positions of modality 1 (n1 x d0)
+    :param y0: embedded positions of modality 0 (n0 x d1)
+    :param y1: embedded positions of modality 1 (n1 x d1)
+    :return: Symmetric FOSCTTM score (lower is better)
+    """
+
+    scores = []
+    for xa, xb, ya, yb in [(x0_ref, x1_ref, y0, y1), (x1_ref, x0_ref, y1, y0)]:
+        nn = NearestNeighbors(n_neighbors=1, algorithm='auto').fit(xb)
+        true_idx = nn.kneighbors(xa, return_distance=False).flatten()
+
+        dist_to_match = np.linalg.norm(ya - yb[true_idx], axis=1)
+        dists = np.linalg.norm(ya[:, None, :] - yb[None, :, :], axis=-1)
+
+        denom = max(yb.shape[0] - 1, 1)
+        frac = (dists < dist_to_match[:, None]).sum(axis=1) / denom
+        scores.append(frac.mean())
+
+    return float(np.mean(scores))
+
+
+def compute_rand_index(labels_true, labels_pred):
+    """
+    Computes the Rand index between two partitions, matching the definition used in the paper:
+
+        Rand = (a + b) / binom(n, 2),
+
+    where a is the number of pairs assigned to the same cluster in both partitions and b is the
+    number of pairs assigned to different clusters in both partitions.
+
+    :param labels_true: ground-truth cluster labels
+    :param labels_pred: predicted cluster labels
+    :return: Rand index in [0, 1]
+    """
+    labels_true = np.asarray(labels_true)
+    labels_pred = np.asarray(labels_pred)
+
+    if labels_true.shape[0] != labels_pred.shape[0]:
+        raise ValueError(
+            "labels_true and labels_pred must have the same number of samples, "
+            f"got {labels_true.shape[0]} and {labels_pred.shape[0]}"
+        )
+
+    n_samples = labels_true.shape[0]
+    if n_samples < 2:
+        return 1.0
+
+    _, true_inverse = np.unique(labels_true, return_inverse=True)
+    _, pred_inverse = np.unique(labels_pred, return_inverse=True)
+
+    n_true = int(true_inverse.max()) + 1
+    n_pred = int(pred_inverse.max()) + 1
+    contingency = np.zeros((n_true, n_pred), dtype=np.int64)
+    np.add.at(contingency, (true_inverse, pred_inverse), 1)
+
+    def comb2(counts):
+        counts = np.asarray(counts, dtype=np.int64)
+        return np.sum(counts * (counts - 1) // 2, dtype=np.int64)
+
+    total_pairs = n_samples * (n_samples - 1) // 2
+    same_in_both = comb2(contingency)
+    same_in_true = comb2(contingency.sum(axis=1))
+    same_in_pred = comb2(contingency.sum(axis=0))
+    different_in_both = total_pairs - same_in_true - same_in_pred + same_in_both
+
+    return float((same_in_both + different_in_both) / total_pairs)
+
+
 def compute_kmeans_rand(embd, gt, n_clusters=6, seed=0):
     kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=seed)
     pred = kmeans.fit_predict(embd)
-    ari = adjusted_rand_score(gt, pred)
-    return ari
+    return adjusted_rand_score(gt, pred)
 
 
 def run_all_metrics(file_name_parts, res_path, dataset, seeds, theta=1.0):
     concordances = []
     cross_concordances = []
+    foscttms = []
     rands = []
     for seed in seeds:
         filename = f"seed_{seed}_".join(file_name_parts)
@@ -133,9 +311,13 @@ def run_all_metrics(file_name_parts, res_path, dataset, seeds, theta=1.0):
             clean0, clean1, cluster0, cluster1 = make_joint_gmm(seed=seed, theta=theta, clean=True)
 
         clean = np.concatenate([clean0, clean1], axis=0)
+        embd0 = embd[:len(clean0)]
+        embd1 = embd[len(clean0):]
 
         concordances.append(compute_concordance(embd, clean))
-        cross_concordances.append(compute_cross_concordance(clean0, clean1, embd[:len(clean0)], embd[len(clean0):]))
+        cross_concordances.append(compute_cross_concordance(clean0, clean1, embd0, embd1))
+
+        foscttms.append(compute_foscttm(clean0, clean1, embd0, embd1))
 
         if dataset == "gmm":
             # also compute rand
@@ -149,10 +331,12 @@ def run_all_metrics(file_name_parts, res_path, dataset, seeds, theta=1.0):
         np.savez(metric_filepath,
                  concordance=np.array(concordances),
                  cross_concordance=np.array(cross_concordances),
+                 foscttm=np.array(foscttms),
                  rand=np.array(rands))
     else:
         np.savez(metric_filepath,
                  concordance=np.array(concordances),
-                 cross_concordance=np.array(cross_concordances))
+                 cross_concordance=np.array(cross_concordances),
+                 foscttm=np.array(foscttms))
 
     print(f"Saved metrics to {metric_filepath} for all seeds.")
