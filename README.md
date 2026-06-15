@@ -45,6 +45,20 @@ For callers that already have an OT plan, use `compute_ot_tsne_embedding_from_pl
 - `notebooks/`: dataset preparation, benchmark, tutorial, and analysis notebooks.
 - `tests/`: unit and regression tests.
 
+## Notebooks
+
+The notebooks are organized by role rather than as one linear workflow:
+
+- `notebooks/two_rings.ipynb`: small synthetic examples for understanding the OT-tSNE construction and its graph-sparsification choices.
+- `notebooks/mnist.ipynb`: MNIST-style two-batch example used as a lightweight image benchmark.
+- `notebooks/nCov_benchmark.ipynb`, `notebooks/Boris_sc_benchmark.ipynb`, `notebooks/yao_10x_benchmark.ipynb`, and `notebooks/lupus_benchmark.ipynb`: benchmark notebooks for the main single-cell datasets.
+- `notebooks/benchmarking_new_embedding_overview.ipynb`: compact overview of benchmark metrics and representative embeddings generated from local aggregate caches.
+- `notebooks/batch_integration_metrics_tutorial.ipynb`: short tutorial for the batch-integration metrics used in the reports.
+- `notebooks/load_nCoV.ipynb`, `notebooks/load_Boris_sc.ipynb`, `notebooks/load_yao_10x.ipynb`, and `notebooks/load_atac_sc.ipynb`: dataset-loading and preprocessing notebooks.
+- `notebooks/analysis_nCov.ipynb`, `notebooks/analysis_Boris_sc.ipynb`, `notebooks/fig1.ipynb`, `notebooks/gmm.ipynb`, and related test notebooks: exploratory analysis and figure-development notebooks kept for reproducibility.
+
+Most benchmark notebooks expect local data or aggregate embedding caches that are not tracked in Git. They should still be useful as runnable templates once the paths described in `data/README.md` are populated.
+
 ## Data
 
 Large datasets, raw counts, generated figures, Slurm logs, and embedding caches are not tracked. See `data/README.md` for the expected local directory layout.
