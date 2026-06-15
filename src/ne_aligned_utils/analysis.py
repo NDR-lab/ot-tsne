@@ -4,13 +4,9 @@ from pathlib import Path
 import matplotlib.lines as mlines
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy.sparse as sp
-from openTSNE import TSNE
-from openTSNE.affinity import Affinities
-from sklearn.decomposition import PCA
 
 from ne_aligned_utils.data import load_nCoV
-from ne_aligned_utils.utils import compute_ot_plan
+from ne_aligned_utils.methods import compute_ot_tsne_embedding_from_arrays
 
 
 @dataclass(frozen=True)
@@ -44,18 +40,6 @@ class NCovAnalysisData:
         return tuple(_short_dataset_name(name) for name in self.dataset_names)
 
 
-@dataclass(frozen=True)
-class EmbeddingViews:
-    name: str
-    first: np.ndarray
-    second: np.ndarray
-    joint: np.ndarray
-
-
-def _copy_embedding_views(embeddings: EmbeddingViews, first: np.ndarray, second: np.ndarray, joint: np.ndarray) -> EmbeddingViews:
-    return EmbeddingViews(name=embeddings.name, first=first, second=second, joint=joint)
-
-
 def _resolve_ncov_path(data_path: str | Path) -> Path:
     path = Path(data_path)
     repo_root = Path(__file__).resolve().parents[2]
@@ -81,11 +65,6 @@ def _short_dataset_name(name: str) -> str:
     return name.split("-")[-1]
 
 
-def _safe_perplexity(n_samples: int, perplexity: float) -> float:
-    max_perplexity = max(5, (n_samples - 1) // 3)
-    return float(min(perplexity, max_perplexity))
-
-
 def _cell_type_palette(cell_type_names: tuple[str, ...], cmap_name: str = "tab20") -> np.ndarray:
     cmap = plt.get_cmap(cmap_name, len(cell_type_names))
     return np.array([cmap(i) for i in range(len(cell_type_names))])
@@ -107,286 +86,18 @@ def load_ncov_analysis_data(data_path: str | Path = "data/nCoV") -> NCovAnalysis
     )
 
 
-def compute_pca_embeddings(
-    data: NCovAnalysisData,
-    n_components: int = 50,
-    random_state: int = 0,
-) -> EmbeddingViews:
-    first = PCA(n_components=n_components, random_state=random_state).fit_transform(data.x1)
-    second = PCA(n_components=n_components, random_state=random_state).fit_transform(data.x2)
-    joint = PCA(n_components=n_components, random_state=random_state).fit_transform(data.joint_data)
-    return EmbeddingViews(name="PCA", first=first, second=second, joint=joint)
-
-
-def _run_tsne(
-    x: np.ndarray,
-    random_state: int = 0,
-    perplexity: float = 30.0,
-    n_jobs: int = 1,
-) -> np.ndarray:
-    tsne = TSNE(
-        random_state=random_state,
-        perplexity=_safe_perplexity(x.shape[0], perplexity),
-        initialization="pca",
-        n_jobs=n_jobs,
-        verbose=False,
-    )
-    return np.asarray(tsne.fit(x))
-
-
-def compute_tsne_embeddings(
-    pca_embeddings: EmbeddingViews,
-    random_state: int = 0,
-    perplexity: float = 30.0,
-    n_jobs: int = 1,
-) -> EmbeddingViews:
-    return EmbeddingViews(
-        name="t-SNE",
-        first=_run_tsne(
-            pca_embeddings.first,
-            random_state=random_state,
-            perplexity=perplexity,
-            n_jobs=n_jobs,
-        ),
-        second=_run_tsne(
-            pca_embeddings.second,
-            random_state=random_state,
-            perplexity=perplexity,
-            n_jobs=n_jobs,
-        ),
-        joint=_run_tsne(
-            pca_embeddings.joint,
-            random_state=random_state,
-            perplexity=perplexity,
-            n_jobs=n_jobs,
-        ),
-    )
-
-
-def compute_eot_embeddings(
-    base_embeddings: EmbeddingViews,
-    t: int = 3,
-    eps_times: float = 1.0,
-    tol: float = 1e-12,
-    max_iter: int = int(1e4),
-    embd_dim: int = 2,
-) -> EmbeddingViews:
-    n0 = base_embeddings.first.shape[0]
-    n1 = base_embeddings.second.shape[0]
-    plan = compute_ot_plan(
-        base_embeddings.first,
-        base_embeddings.second,
-        eps_times=eps_times,
-        tol=tol,
-        maxIter=max_iter,
-    )
-    u, singular_values, vt = np.linalg.svd(np.asarray(plan, dtype=float), full_matrices=False)
-    start = 1
-    stop = start + embd_dim
-    left = u[:, start:stop] * (singular_values[start:stop] ** t) * np.sqrt(n0)
-    right = vt.T[:, start:stop] * (singular_values[start:stop] ** t) * np.sqrt(n1)
-    joint = np.concatenate([left, right], axis=0)
-    return EmbeddingViews(name=f"EOT t={t}", first=left, second=right, joint=joint)
-
-
-def compute_ot_plan_from_views(
-    base_embeddings: EmbeddingViews,
-    eps_times: float = 10.0,
-    tol: float = 1e-12,
-    max_iter: int = int(1e4),
-) -> np.ndarray:
-    return np.asarray(
-        compute_ot_plan(
-            base_embeddings.first,
-            base_embeddings.second,
-            eps_times=eps_times,
-            tol=tol,
-            maxIter=max_iter,
-        ),
-        dtype=float,
-    )
-
-
-def compute_ot_plan_from_arrays(
-    x0: np.ndarray,
-    x1: np.ndarray,
-    eps_times: float = 10.0,
-    tol: float = 1e-12,
-    max_iter: int = int(1e4),
-) -> np.ndarray:
-    return np.asarray(
-        compute_ot_plan(
-            np.asarray(x0, dtype=float),
-            np.asarray(x1, dtype=float),
-            eps_times=eps_times,
-            tol=tol,
-            maxIter=max_iter,
-        ),
-        dtype=float,
-    )
-
-
-def build_ot_tsne_four_block_matrix(plan: np.ndarray) -> np.ndarray:
-    n0, n1 = plan.shape
-    u, singular_values, vt = np.linalg.svd(np.asarray(plan, dtype=float), full_matrices=False)
-    eot = np.concatenate([u * np.sqrt(n0), vt.T * np.sqrt(n1)], axis=0)
-    matrix = eot @ np.diag(singular_values) @ eot.T / np.sqrt(n0 * n1)
-    matrix = np.asarray(matrix, dtype=float)
-    matrix[matrix < 0] = 0.0
-    np.fill_diagonal(matrix, 0.0)
-    return matrix
-
-
-def _row_or_col_topk_mask(block: np.ndarray, row_k: int, col_k: int) -> np.ndarray:
-    n_rows, n_cols = block.shape
-    row_k = min(max(1, int(row_k)), n_cols)
-    col_k = min(max(1, int(col_k)), n_rows)
-    mask = np.zeros_like(block, dtype=bool)
-
-    if row_k >= n_cols:
-        mask[:, :] = True
-    else:
-        row_idx = np.argpartition(block, n_cols - row_k, axis=1)[:, -row_k:]
-        rows = np.arange(n_rows, dtype=int)[:, None]
-        mask[rows, row_idx] = True
-
-    if col_k >= n_rows:
-        mask[:, :] = True
-    else:
-        col_idx = np.argpartition(block, n_rows - col_k, axis=0)[-col_k:, :]
-        cols = np.arange(n_cols, dtype=int)[None, :]
-        mask[col_idx, cols] = True
-
-    return mask
-
-
-def _top_percentage_neighbors_block_mask(block: np.ndarray, percentage: float) -> np.ndarray:
-    n_rows, n_cols = block.shape
-    row_k = max(1, int(np.ceil(float(percentage) * n_cols)))
-    col_k = max(1, int(np.ceil(float(percentage) * n_rows)))
-    return _row_or_col_topk_mask(block, row_k=row_k, col_k=col_k)
-
-
-def _ensure_nonempty_mask(mask: np.ndarray, block: np.ndarray) -> np.ndarray:
-    mask = np.array(mask, dtype=bool, copy=True)
-
-    empty_rows = np.where(~mask.any(axis=1))[0]
-    if empty_rows.size > 0:
-        row_argmax = np.argmax(block[empty_rows], axis=1)
-        mask[empty_rows, row_argmax] = True
-
-    empty_cols = np.where(~mask.any(axis=0))[0]
-    if empty_cols.size > 0:
-        col_argmax = np.argmax(block[:, empty_cols], axis=0)
-        mask[col_argmax, empty_cols] = True
-
-    return mask
-
-
-def sparsify_four_block_top_neighbors(
-    matrix: np.ndarray,
-    n0: int,
-    n1: int,
-    percentage: float = 0.15,
-    ensure_nonempty: bool = True,
-    binarize: bool = False,
-) -> np.ndarray:
-    matrix = np.asarray(matrix, dtype=float)
-    if matrix.shape != (int(n0) + int(n1), int(n0) + int(n1)):
-        raise ValueError(
-            f"Expected a square 4-block matrix with shape {(int(n0) + int(n1), int(n0) + int(n1))}, got {matrix.shape}."
-        )
-    if not (0.0 < float(percentage) <= 1.0):
-        raise ValueError(f"percentage must be in (0, 1], got {percentage}.")
-
-    mask = np.zeros_like(matrix, dtype=bool)
-    for row_slice, col_slice in (
-        (slice(0, n0), slice(0, n0)),
-        (slice(0, n0), slice(n0, n0 + n1)),
-        (slice(n0, n0 + n1), slice(0, n0)),
-        (slice(n0, n0 + n1), slice(n0, n0 + n1)),
-    ):
-        block = matrix[row_slice, col_slice]
-        block_mask = _top_percentage_neighbors_block_mask(block, percentage)
-        if ensure_nonempty:
-            block_mask = _ensure_nonempty_mask(block_mask, block)
-        mask[row_slice, col_slice] = block_mask
-
-    np.fill_diagonal(mask, False)
-    sparse_matrix = np.where(mask, matrix, 0.0)
-    sparse_matrix = np.nan_to_num(sparse_matrix, nan=0.0, posinf=0.0, neginf=0.0)
-    sparse_matrix[sparse_matrix < 0] = 0.0
-    if binarize:
-        sparse_matrix = (sparse_matrix > 0.0).astype(float)
-    return sparse_matrix
-
-
-def normalize_ot_tsne_graph(matrix: np.ndarray) -> np.ndarray:
-    graph = np.asarray(matrix, dtype=float)
-    if graph.ndim != 2:
-        raise ValueError(f"Expected a 2D 4-block matrix, got shape {graph.shape}.")
-
-    graph = np.nan_to_num(graph, nan=0.0, posinf=0.0, neginf=0.0)
-    graph[graph < 0] = 0.0
-    graph = (graph > 0.0).astype(float)
-    graph = np.maximum(graph, graph.T)
-    np.fill_diagonal(graph, 0.0)
-
-    total_mass = float(graph.sum())
-    if total_mass <= 0.0:
-        raise ValueError("Graph has zero total mass after normalization.")
-    return graph / total_mass
-
-
-def run_tsne_from_graph(
-    graph: np.ndarray,
-    random_state: int = 0,
-    n_epochs: int = 200,
-    init_scale: float = 10000.0,
-) -> np.ndarray:
-    graph = np.asarray(graph, dtype=float)
-    graph = np.nan_to_num(graph, nan=0.0, posinf=0.0, neginf=0.0)
-    graph[graph < 0] = 0.0
-    np.fill_diagonal(graph, 0.0)
-
-    total_mass = float(graph.sum())
-    if total_mass <= 0.0:
-        raise ValueError("Graph has zero total mass; cannot run t-SNE.")
-    graph = graph / total_mass
-
-    n_points = graph.shape[0]
-    init = np.random.RandomState(int(random_state)).randn(n_points, 2)
-    init = init / (init[:, 0].std() * float(init_scale))
-    n_early = int(n_epochs) // 3
-    n_late = int(n_epochs) - n_early
-
-    affinities = Affinities()
-    affinities.P = sp.csr_matrix(graph)
-    embedder = TSNE(
-        n_components=2,
-        random_state=int(random_state),
-        verbose=False,
-        early_exaggeration_iter=n_early,
-        n_iter=n_late,
-    )
-    return np.asarray(embedder.fit(affinities=affinities, initialization=init))
-
-
-def standardize_embedding_views(embeddings: EmbeddingViews, eps: float = 1e-12) -> EmbeddingViews:
-    mean = embeddings.joint.mean(axis=0, keepdims=True)
-    std = embeddings.joint.std(axis=0, keepdims=True)
+def standardize_embedding(embedding: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    embedding = np.asarray(embedding, dtype=float)
+    mean = embedding.mean(axis=0, keepdims=True)
+    std = embedding.std(axis=0, keepdims=True)
     std = np.where(std < eps, 1.0, std)
-    return _copy_embedding_views(
-        embeddings,
-        first=(embeddings.first - mean) / std,
-        second=(embeddings.second - mean) / std,
-        joint=(embeddings.joint - mean) / std,
-    )
+    return (embedding - mean) / std
 
 
 def plot_embedding_panels(
-    embeddings: EmbeddingViews,
+    embedding: np.ndarray,
     data: NCovAnalysisData,
+    name: str = "embedding",
     color_by: str = "batch",
     point_size: float = 3.0,
     alpha: float = 0.85,
@@ -398,9 +109,15 @@ def plot_embedding_panels(
     if color_by not in {"batch", "cell_type"}:
         raise ValueError("color_by must be either 'batch' or 'cell_type'")
 
-    plotted_embeddings = (
-        standardize_embedding_views(embeddings) if standardize else embeddings
-    )
+    embedding = np.asarray(embedding, dtype=float)
+    if embedding.shape[0] != data.joint_data.shape[0]:
+        raise ValueError(
+            "embedding and data must contain the same number of samples, "
+            f"got {embedding.shape[0]} and {data.joint_data.shape[0]}."
+        )
+    plotted_embedding = standardize_embedding(embedding) if standardize else embedding
+    first_embedding = plotted_embedding[: data.x1.shape[0]]
+    second_embedding = plotted_embedding[data.x1.shape[0] :]
 
     fig, axes = plt.subplots(1, 3, figsize=figsize, constrained_layout=True)
     batch_palette = np.array(["tab:red", "tab:blue"], dtype=object)
@@ -444,25 +161,25 @@ def plot_embedding_panels(
         legend_title = "Cell type"
 
     panel_specs = [
-        (axes[0], plotted_embeddings.first, first_colors, data.short_dataset_names[0]),
-        (axes[1], plotted_embeddings.second, second_colors, data.short_dataset_names[1]),
+        (axes[0], first_embedding, first_colors, data.short_dataset_names[0]),
+        (axes[1], second_embedding, second_colors, data.short_dataset_names[1]),
     ]
 
     for ax, values, colors, title_suffix in panel_specs:
         ax.scatter(values[:, 0], values[:, 1], s=point_size, c=colors, alpha=alpha)
-        ax.set_title(f"{embeddings.name} on {title_suffix}")
+        ax.set_title(f"{name} on {title_suffix}")
         ax.set_aspect(aspect)
         ax.axis("off")
 
-    order = np.random.default_rng(joint_shuffle_seed).permutation(plotted_embeddings.joint.shape[0])
+    order = np.random.default_rng(joint_shuffle_seed).permutation(plotted_embedding.shape[0])
     axes[2].scatter(
-        plotted_embeddings.joint[order, 0],
-        plotted_embeddings.joint[order, 1],
+        plotted_embedding[order, 0],
+        plotted_embedding[order, 1],
         s=point_size,
         c=joint_colors[order],
         alpha=alpha,
     )
-    axes[2].set_title(f"Joint {embeddings.name}")
+    axes[2].set_title(f"Joint {name}")
     axes[2].set_aspect(aspect)
     axes[2].axis("off")
     axes[2].legend(
@@ -474,7 +191,7 @@ def plot_embedding_panels(
         fontsize=8,
     )
 
-    fig.suptitle(f"{embeddings.name} embeddings colored by {color_by.replace('_', ' ')}")
+    fig.suptitle(f"{name} embeddings colored by {color_by.replace('_', ' ')}")
     return fig, axes
 
 
@@ -650,44 +367,6 @@ def plot_matrix(
     return fig, ax
 
 
-def compute_ot_tsne_embedding_from_arrays(
-    x0: np.ndarray,
-    x1: np.ndarray,
-    eps_times: float = 1.0,
-    percentage: float = 0.005,
-    tol: float = 1e-12,
-    max_iter: int = int(1e4),
-    ensure_nonempty: bool = True,
-    binarize: bool = True,
-    random_state: int = 0,
-    n_epochs: int = 200,
-    init_scale: float = 10000.0,
-) -> np.ndarray:
-    ot_plan = compute_ot_plan_from_arrays(
-        x0,
-        x1,
-        eps_times=eps_times,
-        tol=tol,
-        max_iter=max_iter,
-    )
-    four_block = build_ot_tsne_four_block_matrix(ot_plan)
-    sparse_four_block = sparsify_four_block_top_neighbors(
-        four_block,
-        n0=np.asarray(x0).shape[0],
-        n1=np.asarray(x1).shape[0],
-        percentage=percentage,
-        ensure_nonempty=ensure_nonempty,
-        binarize=binarize,
-    )
-    graph = normalize_ot_tsne_graph(sparse_four_block)
-    return run_tsne_from_graph(
-        graph,
-        random_state=random_state,
-        n_epochs=n_epochs,
-        init_scale=init_scale,
-    )
-
-
 def plot_ot_tsne_sweep_grid(
     data: NCovAnalysisData,
     percentages: tuple[float, ...] = (0.005, 0.01, 0.05, 0.1, 0.2),
@@ -725,6 +404,7 @@ def plot_ot_tsne_sweep_grid(
                 data.x1,
                 data.x2,
                 eps_times=eps_times,
+                effective_k=None,
                 percentage=percentage,
                 binarize=binarize,
                 random_state=random_state,
@@ -767,23 +447,12 @@ def plot_ot_tsne_sweep_grid(
 
 
 __all__ = [
-    "EmbeddingViews",
     "NCovAnalysisData",
-    "compute_eot_embeddings",
-    "compute_ot_plan_from_arrays",
-    "compute_ot_plan_from_views",
-    "compute_ot_tsne_embedding_from_arrays",
-    "compute_pca_embeddings",
-    "compute_tsne_embeddings",
     "load_ncov_analysis_data",
-    "build_ot_tsne_four_block_matrix",
     "plot_ot_tsne_sweep_grid",
     "plot_embedding_panels",
     "plot_joint_embedding_pair",
     "plot_joint_embedding",
     "plot_matrix",
-    "normalize_ot_tsne_graph",
-    "run_tsne_from_graph",
-    "sparsify_four_block_top_neighbors",
-    "standardize_embedding_views",
+    "standardize_embedding",
 ]

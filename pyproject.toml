@@ -1,19 +1,27 @@
 [project]
 name = "ne-aligned"
 version = "0.1.0"
-description = "Add your description here"
+description = "Aligned nonlinear embedding utilities and benchmark reports"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
-    "contrastive-ne",
+    "anndata>=0.12.3",
+    "harmonypy>=0.0.10",
+    "h5py>=3.14.0",
     "jupyterlab>=4.4.6",
     "matplotlib>=3.10.5",
+    "nbclient>=0.10.2",
+    "nbformat>=5.10.4",
     "numba>=0.61.2",
     "numpy>=2.2.6",
     "opentsne>=1.0.2",
+    "pandas>=2.3.2",
     "pot[backend-torch]>=0.9.5",
+    "requests>=2.32.5",
     "scanpy>=1.11.5",
     "scikit-misc>=0.5.1",
+    "scikit-learn>=1.7.1",
+    "scvi-tools>=1.1.0",
     "scipy>=1.16.1",
     "setuptools>=82.0.0",
     "torch>=2.8.0",
@@ -28,5 +36,10 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.uv.sources]
-contrastive-ne = { path = "../repos/contrastive-ne", editable = true }
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

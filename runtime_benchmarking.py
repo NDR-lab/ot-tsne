@@ -1,13 +1,13 @@
-from __future__ import annotations
+from __future__ import annotations  # postponed evaluation of annotations
 
 import argparse
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import ot
 
 
 ROOT = Path(__file__).resolve().parent
@@ -15,10 +15,11 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from ne_aligned_utils.benchmarking import (  # noqa: E402
-    build_four_block_matrix,
+from ne_aligned_utils.methods import (  # noqa: E402
+    build_ot_tsne_four_block_matrix,
+    compute_ot_plan,
     run_tsne_from_graph,
-    sparsify_top_percentage_neighbors_graph,
+    sparsify_four_block_top_percentage,
 )
 from ne_aligned_utils.data import make_fig1_data  # noqa: E402
 
@@ -121,49 +122,6 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def resolve_epsilon(
-    obs0: np.ndarray,
-    obs1: np.ndarray,
-    *,
-    epsilon: float | None,
-    eps_times: float,
-) -> tuple[np.ndarray, float, float]:
-    dist = ot.dist(obs0, obs1)
-    median_squared_distance = float(np.median(dist))
-
-    if epsilon is None:
-        if eps_times <= 0:
-            raise ValueError(f"eps_times must be positive, got {eps_times}.")
-        epsilon = median_squared_distance / float(eps_times)
-    elif epsilon <= 0:
-        raise ValueError(f"epsilon must be positive, got {epsilon}.")
-
-    return dist, median_squared_distance, float(epsilon)
-
-
-def compute_ot_plan_with_epsilon(
-    obs0: np.ndarray,
-    obs1: np.ndarray,
-    *,
-    epsilon: float | None,
-    eps_times: float,
-    tol: float,
-    max_iter: int,
-) -> tuple[np.ndarray, float, float]:
-    dist, median_squared_distance, epsilon_value = resolve_epsilon(
-        obs0,
-        obs1,
-        epsilon=epsilon,
-        eps_times=eps_times,
-    )
-    n0 = obs0.shape[0]
-    n1 = obs1.shape[0]
-    a = np.full(n0, 1.0 / n0, dtype=float)
-    b = np.full(n1, 1.0 / n1, dtype=float)
-    plan = ot.sinkhorn(a, b, dist, reg=epsilon_value, numItermax=max_iter, stopThr=tol)
-    return np.asarray(plan), median_squared_distance, epsilon_value
-
-
 def create_ring_embedding(
     *,
     n0: int,
@@ -176,43 +134,74 @@ def create_ring_embedding(
     eps_times: float,
     tol: float,
     max_iter: int,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> RingEmbeddingRun:
-    pipeline_start = time.perf_counter()
+    def emit_progress(message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(message)
 
+    pipeline_start = time.perf_counter()
+    emit_progress(
+        "starting benchmark pipeline "
+        f"(n0={n0}, n1={n1}, seed={seed}, tsne_seed={tsne_seed}, "
+        f"epsilon={'auto' if epsilon is None else f'{epsilon:g}'}, top_pct={top_pct:g})"
+    )
+
+    emit_progress("starting data generation")
     data_start = time.perf_counter()
     obs0, obs1 = make_fig1_data(n0=n0, n1=n1, seed=seed, clean=False)
     clean0, clean1 = make_fig1_data(n0=n0, n1=n1, seed=seed, clean=True)
     data_seconds = time.perf_counter() - data_start
+    emit_progress(f"finished data generation in {data_seconds:.4f}s")
 
+    emit_progress("starting Sinkhorn plan computation")
     sinkhorn_start = time.perf_counter()
-    plan, median_squared_distance, epsilon_value = compute_ot_plan_with_epsilon(
+    plan, ot_artifacts = compute_ot_plan(
         obs0,
         obs1,
         epsilon=epsilon,
         eps_times=eps_times,
         tol=tol,
         max_iter=max_iter,
+        return_artifacts=True,
     )
+    median_squared_distance = float(ot_artifacts["median_squared_distance"])
+    epsilon_value = float(ot_artifacts["epsilon"])
     sinkhorn_seconds = time.perf_counter() - sinkhorn_start
+    emit_progress(
+        "finished Sinkhorn in "
+        f"{sinkhorn_seconds:.4f}s (median_sq_dist={median_squared_distance:.6g}, "
+        f"epsilon={epsilon_value:.6g})"
+    )
 
+    emit_progress("starting 4-block matrix construction")
     four_block_start = time.perf_counter()
-    four_block_matrix = build_four_block_matrix(plan)
+    four_block_matrix = build_ot_tsne_four_block_matrix(plan)
     four_block_seconds = time.perf_counter() - four_block_start
+    emit_progress(f"finished 4-block matrix construction in {four_block_seconds:.4f}s")
 
+    emit_progress("starting graph sparsification")
     sparsify_start = time.perf_counter()
-    graph = sparsify_top_percentage_neighbors_graph(
+    graph = sparsify_four_block_top_percentage(
         four_block_matrix,
         percentage=float(top_pct) / 100.0,
         n0=n0,
         n1=n1,
     )
     sparsify_seconds = time.perf_counter() - sparsify_start
+    emit_progress(
+        "finished graph sparsification in "
+        f"{sparsify_seconds:.4f}s (graph_nnz={int(np.count_nonzero(graph))})"
+    )
 
+    emit_progress("starting t-SNE embedding")
     tsne_start = time.perf_counter()
-    embedding = run_tsne_from_graph(graph, seed=tsne_seed, n_epochs=n_epochs)
+    embedding = run_tsne_from_graph(graph, random_state=tsne_seed, n_epochs=n_epochs)
     tsne_seconds = time.perf_counter() - tsne_start
+    emit_progress(f"finished t-SNE embedding in {tsne_seconds:.4f}s")
 
     total_seconds = time.perf_counter() - pipeline_start
+    emit_progress(f"finished benchmark pipeline in {total_seconds:.4f}s")
     return RingEmbeddingRun(
         obs0=np.asarray(obs0),
         obs1=np.asarray(obs1),

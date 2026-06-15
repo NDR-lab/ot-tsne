@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Environments and local tool state
+.venv/
+.claude/
+.codex
+
+# Build artifacts
+build/
+dist/
+*.whl
+
+# Large local datasets and generated benchmark caches
+data/**
+!data/
+!data/README.md
+benchmarking_new/**
+!benchmarking_new/
+lupus dataset/
+benchmark_paper.pdf
+
+# Generated reports: keep compact CSV summaries, ignore rendered figures
+results/**/figures/
+results/**/*.png
+results/**/*.pdf
+
+# Runtime logs
+*.log
+slurm-*.out

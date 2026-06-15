@@ -1,8 +1,18 @@
-import ot
-import scipy.sparse as sp
-import numpy as np
+import os
+import pickle
 from importlib.resources import files
+from pathlib import Path
+
+import numpy as np
+import scipy.sparse as sp
+import torch
+from sklearn.neighbors import NearestNeighbors
+
+from ne_aligned_utils.methods import build_ot_tsne_four_block_matrix
 from ne_aligned_utils.transport_plan_sparsify import sparsify_transport_plan
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # utilities
 
@@ -16,32 +26,56 @@ def get_path(path_type):
 
     if path_type == "data":
         try:
-            return path_dict["data_path"]
+            return _resolve_configured_path(path_dict["data_path"])
         except KeyError:
             print("There is no path 'data_path'.")
 
     elif path_type == "figures":
         try:
-            return path_dict["fig_path"]
+            return _resolve_configured_path(path_dict["fig_path"])
         except KeyError:
             print("There is no path 'fig_path'.")
 
 
+def _resolve_configured_path(path_value):
+    path = Path(path_value).expanduser()
+    if path.is_absolute():
+        return str(path)
+    return str((_REPO_ROOT / path).resolve())
 
-def compute_ot_plan(x0, x1, eps_times=1, tol=1e-12, maxIter=int(1e4)):
-    dist = ot.dist(x0, x1)  # this is already the squared Euclidean distance
-    eps = np.median(dist)  # square of median and median of squares are the same
 
-    eps /= eps_times
+def save_dict(data, file_path):
+    file_path = Path(file_path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    with file_path.open("wb") as file:
+        pickle.dump(data, file, protocol=pickle.HIGHEST_PROTOCOL)
 
-    n0 = len(x0)
-    n1 = len(x1)
 
-    a = np.ones((n0,)) / n0
-    b = np.ones((n1,)) / n1
+def load_dict(file_path):
+    with Path(file_path).open("rb") as file:
+        return pickle.load(file)
 
-    P = ot.sinkhorn(a, b, dist, reg=eps, numItermax=maxIter, stopThr=tol)
-    return P
+
+def kNN_graph(x, k, metric="euclidean"):
+    if k <= 0:
+        raise ValueError(f"k must be positive, got {k}.")
+
+    neighbors = NearestNeighbors(n_neighbors=min(k + 1, len(x)), metric=metric)
+    neighbors.fit(x)
+    raw_indices = neighbors.kneighbors(x, return_distance=False)
+    row_ids = np.arange(len(x))[:, None]
+    indices = raw_indices[raw_indices != row_ids].reshape(len(x), -1)
+
+    if indices.shape[1] < k:
+        raise ValueError(
+            f"Unable to compute {k} non-self neighbors for {len(x)} samples."
+        )
+
+    indices = indices[:, :k]
+
+    return torch.as_tensor(indices, dtype=torch.long)
+
+
 
 def _plan_stats(P_sparse, method, percentage=None):
     nnz = int(np.count_nonzero(P_sparse))
@@ -109,25 +143,11 @@ def sparsify_plan(
         return P_sparse, _plan_stats(P_sparse, method=mode, percentage=percentage)
     return P_sparse
 
-def get_eot(P, t=0, returnS=False):
-    U, S, V = np.linalg.svd(P, full_matrices=False)
-    n0 = P.shape[0]
-    n1 = P.shape[1]
-    eot = np.concatenate([U * S**t * np.sqrt(n0),
-                          V.T *S**t * np.sqrt(n1)], axis=0)
-    if returnS:
-        return eot, S
-    else:
-        return eot
-
 def get_bipartite_graph(P, diag=False):
     n0, n1 = P.shape
 
     if diag:
-        eot, S = get_eot(P, t=0, returnS=True)
-        sim = eot @ np.diag(S) @ eot.T / np.sqrt(n0 * n1)
-        sim[sim<0] = 0
-        np.fill_diagonal(sim, 0)
+        sim = build_ot_tsne_four_block_matrix(P)
         G_sp = sp.csr_matrix(sim)
     else:
         P_sp = sp.csr_matrix(P)

@@ -1,16 +1,16 @@
-from __future__ import annotations
+from __future__ import annotations  # postponed evaluation of annotations
 
 import argparse
 import csv
 import shlex
 import subprocess
 import sys
+from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-
-from runtime_benchmarking import create_ring_embedding
 
 
 DETAIL_FIELDNAMES = [
@@ -61,6 +61,30 @@ class GroupSpec:
     top_pct: float
 
 
+@dataclass(frozen=True)
+class RunSpec:
+    n0: int
+    n1: int
+    epsilon: float
+    top_pct: float
+    seed: int
+
+
+SLURM_MANIFEST_FIELDNAMES = [
+    "run_index",
+    "job_id",
+    "job_name",
+    "n0",
+    "n1",
+    "seed",
+    "epsilon",
+    "top_pct",
+    "detail_csv",
+    "log_path",
+    "command",
+]
+
+
 def parse_pair(pair_text: str) -> tuple[int, int]:
     parts = [part.strip() for part in pair_text.split(",")]
     if len(parts) != 2:
@@ -83,28 +107,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pairs",
         nargs="+",
-        required=True,
         help="List of sample-size pairs in the form 'n0,n1'. Example: --pairs 100,500 500,2500",
     )
     parser.add_argument(
         "--epsilons",
         nargs="+",
         type=float,
-        required=True,
         help="Explicit epsilon values to benchmark.",
     )
     parser.add_argument(
         "--percentages",
         nargs="+",
         type=float,
-        required=True,
         help="Top-neighbor percentages to benchmark, given in percent units like 1 5 10.",
     )
     parser.add_argument(
         "--seeds",
         nargs="+",
         type=int,
-        required=True,
         help=(
             "Seeds to benchmark. Each seed is used both for ring data generation and t-SNE "
             "initialization."
@@ -172,6 +192,72 @@ def parse_args() -> argparse.Namespace:
         help="Prefix used for detached tmux session names.",
     )
     parser.add_argument(
+        "--launch-slurm",
+        action="store_true",
+        help=(
+            "Submit one sbatch job per full benchmark parameter combination "
+            "(pair, epsilon, percentage, seed)."
+        ),
+    )
+    parser.add_argument(
+        "--aggregate-slurm-results",
+        action="store_true",
+        help=(
+            "Combine per-run Slurm outputs from --output-dir into consolidated detail and "
+            "summary CSVs."
+        ),
+    )
+    parser.add_argument(
+        "--slurm-job-prefix",
+        type=str,
+        default="runtime-bench",
+        help="Prefix used for submitted Slurm job names.",
+    )
+    parser.add_argument(
+        "--slurm-time",
+        type=str,
+        default=None,
+        help="Optional sbatch --time value, for example '01:00:00'.",
+    )
+    parser.add_argument(
+        "--slurm-partition",
+        type=str,
+        default=None,
+        help="Optional sbatch --partition value.",
+    )
+    parser.add_argument(
+        "--slurm-account",
+        type=str,
+        default=None,
+        help="Optional sbatch --account value.",
+    )
+    parser.add_argument(
+        "--slurm-cpus-per-task",
+        type=int,
+        default=None,
+        help="Optional sbatch --cpus-per-task value.",
+    )
+    parser.add_argument(
+        "--slurm-mem",
+        type=str,
+        default=None,
+        help="Optional sbatch --mem value, for example '8G'.",
+    )
+    parser.add_argument(
+        "--slurm-extra-arg",
+        action="append",
+        default=[],
+        help=(
+            "Additional raw sbatch argument to pass through. Repeat this flag for multiple "
+            "arguments, for example --slurm-extra-arg=--gres=gpu:1."
+        ),
+    )
+    parser.add_argument(
+        "--log-progress",
+        action="store_true",
+        help="Emit stage-by-stage progress messages while each benchmark run executes.",
+    )
+    parser.add_argument(
         "--worker-index",
         type=int,
         default=0,
@@ -185,13 +271,34 @@ def parse_args() -> argparse.Namespace:
     )
     args = parser.parse_args()
 
-    args.pairs = [parse_pair(pair_text) for pair_text in args.pairs]
+    requires_parameter_grid = not args.aggregate_slurm_results
+    if requires_parameter_grid:
+        missing_flags = []
+        if not args.pairs:
+            missing_flags.append("--pairs")
+        if not args.epsilons:
+            missing_flags.append("--epsilons")
+        if not args.percentages:
+            missing_flags.append("--percentages")
+        if not args.seeds:
+            missing_flags.append("--seeds")
+        if missing_flags:
+            raise ValueError(
+                "Missing required arguments for benchmark execution: "
+                + ", ".join(missing_flags)
+            )
+
+    args.pairs = [parse_pair(pair_text) for pair_text in (args.pairs or [])]
+    args.epsilons = [] if args.epsilons is None else [float(epsilon) for epsilon in args.epsilons]
+    args.percentages = (
+        [] if args.percentages is None else [float(percentage) for percentage in args.percentages]
+    )
+    args.seeds = [] if args.seeds is None else [int(seed) for seed in args.seeds]
+
     if any(epsilon <= 0 for epsilon in args.epsilons):
         raise ValueError(f"All epsilons must be positive, got {args.epsilons}.")
     if any(percentage <= 0 or percentage > 100 for percentage in args.percentages):
-        raise ValueError(
-            f"All percentages must lie in (0, 100], got {args.percentages}."
-        )
+        raise ValueError(f"All percentages must lie in (0, 100], got {args.percentages}.")
     if args.n_epochs <= 0:
         raise ValueError(f"n_epochs must be positive, got {args.n_epochs}.")
     if args.tmux_splits <= 0:
@@ -203,8 +310,18 @@ def parse_args() -> argparse.Namespace:
             f"worker_index must satisfy 0 <= worker_index < num_workers, got "
             f"worker_index={args.worker_index}, num_workers={args.num_workers}."
         )
+    if args.launch_tmux and args.launch_slurm:
+        raise ValueError("Choose at most one launcher mode: --launch-tmux or --launch-slurm.")
     if args.launch_tmux and args.output_dir is None:
         raise ValueError("--launch-tmux requires --output-dir so each worker can write separate files.")
+    if args.launch_slurm and args.output_dir is None:
+        raise ValueError("--launch-slurm requires --output-dir for per-job outputs and logs.")
+    if args.aggregate_slurm_results and args.output_dir is None:
+        raise ValueError("--aggregate-slurm-results requires --output-dir.")
+    if args.slurm_cpus_per_task is not None and args.slurm_cpus_per_task <= 0:
+        raise ValueError(
+            f"slurm_cpus_per_task must be positive, got {args.slurm_cpus_per_task}."
+        )
 
     return args
 
@@ -223,6 +340,24 @@ def build_group_specs(args: argparse.Namespace) -> list[GroupSpec]:
                     )
                 )
     return groups
+
+
+def build_run_specs(args: argparse.Namespace) -> list[RunSpec]:
+    runs = []
+    for n0, n1 in args.pairs:
+        for epsilon in args.epsilons:
+            for percentage in args.percentages:
+                for seed in args.seeds:
+                    runs.append(
+                        RunSpec(
+                            n0=int(n0),
+                            n1=int(n1),
+                            epsilon=float(epsilon),
+                            top_pct=float(percentage),
+                            seed=int(seed),
+                        )
+                    )
+    return runs
 
 
 def select_worker_groups(groups: list[GroupSpec], worker_index: int, num_workers: int) -> list[GroupSpec]:
@@ -247,6 +382,40 @@ def remove_if_exists(path: Path | None) -> None:
 def worker_tag(worker_index: int, num_workers: int) -> str:
     width = max(2, len(str(num_workers - 1)))
     return f"worker_{worker_index:0{width}d}_of_{num_workers:0{width}d}"
+
+
+def slugify_component(value: int | float | str) -> str:
+    text = str(value)
+    replacements = {
+        "-": "m",
+        ".": "p",
+        "+": "",
+        "e": "e",
+        "E": "e",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return "".join(char if char.isalnum() or char == "_" else "_" for char in text)
+
+
+def make_run_tag(run_index: int, total_runs: int, run_spec: RunSpec) -> str:
+    width = max(4, len(str(total_runs)))
+    return (
+        f"run_{run_index:0{width}d}"
+        f"_n0_{run_spec.n0}"
+        f"_n1_{run_spec.n1}"
+        f"_eps_{slugify_component(f'{run_spec.epsilon:g}')}"
+        f"_pct_{slugify_component(f'{run_spec.top_pct:g}')}"
+        f"_seed_{run_spec.seed}"
+    )
+
+
+def resolve_slurm_run_paths(output_dir: Path, run_tag: str) -> tuple[Path, Path]:
+    runs_dir = output_dir / "slurm_runs"
+    logs_dir = output_dir / "slurm_logs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    return runs_dir / f"{run_tag}_detail.csv", logs_dir / f"{run_tag}.log"
 
 
 def resolve_worker_paths(
@@ -329,6 +498,8 @@ def print_summary(summary_rows: list[dict[str, float | int]]) -> None:
 
 
 def run_worker(args: argparse.Namespace) -> list[dict[str, float | int]]:
+    from runtime_benchmarking import create_ring_embedding
+
     all_groups = build_group_specs(args)
     assigned_groups = select_worker_groups(all_groups, args.worker_index, args.num_workers)
     detail_path, summary_path, _ = resolve_worker_paths(args)
@@ -340,19 +511,25 @@ def run_worker(args: argparse.Namespace) -> list[dict[str, float | int]]:
     total_runs = len(assigned_groups) * len(args.seeds)
     if total_runs == 0:
         print(
-            f"No work assigned to worker {args.worker_index}/{args.num_workers - 1}. "
-            "Nothing to do."
+            timestamped_message(
+                f"No work assigned to worker {args.worker_index}/{args.num_workers - 1}. "
+                "Nothing to do."
+            ),
+            flush=True,
         )
         return []
 
     print(
-        f"Worker {args.worker_index + 1}/{args.num_workers}: "
-        f"{len(assigned_groups)} group(s), {total_runs} run(s)."
+        timestamped_message(
+            f"Worker {args.worker_index + 1}/{args.num_workers}: "
+            f"{len(assigned_groups)} group(s), {total_runs} run(s)."
+        ),
+        flush=True,
     )
     if detail_path is not None:
-        print(f"  detail_csv={detail_path}")
+        print(timestamped_message(f"  detail_csv={detail_path}"), flush=True)
     if summary_path is not None:
-        print(f"  summary_csv={summary_path}")
+        print(timestamped_message(f"  summary_csv={summary_path}"), flush=True)
 
     summary_rows: list[dict[str, float | int]] = []
     run_idx = 0
@@ -360,12 +537,23 @@ def run_worker(args: argparse.Namespace) -> list[dict[str, float | int]]:
     for group_idx, group in enumerate(assigned_groups, start=1):
         group_rows: list[dict[str, float | int]] = []
         print(
-            f"\nGroup {group_idx}/{len(assigned_groups)}: "
-            f"n0={group.n0}, n1={group.n1}, epsilon={group.epsilon:g}, top_pct={group.top_pct:g}"
+            "\n"
+            + timestamped_message(
+                f"Group {group_idx}/{len(assigned_groups)}: "
+                f"n0={group.n0}, n1={group.n1}, epsilon={group.epsilon:g}, top_pct={group.top_pct:g}"
+            ),
+            flush=True,
         )
         for seed in args.seeds:
             run_idx += 1
-            print(f"  Run {run_idx}/{total_runs}: seed={seed}")
+            print(timestamped_message(f"  Run {run_idx}/{total_runs}: seed={seed}"), flush=True)
+
+            def progress_logger(message: str, *, _run_idx: int = run_idx, _total_runs: int = total_runs) -> None:
+                print(
+                    timestamped_message(f"    run {_run_idx}/{_total_runs}: {message}"),
+                    flush=True,
+                )
+
             run = create_ring_embedding(
                 n0=group.n0,
                 n1=group.n1,
@@ -377,6 +565,7 @@ def run_worker(args: argparse.Namespace) -> list[dict[str, float | int]]:
                 eps_times=1.0,
                 tol=args.tol,
                 max_iter=args.max_iter,
+                progress_callback=progress_logger if args.log_progress else None,
             )
 
             row = make_detail_row(group, int(seed), run)
@@ -385,11 +574,14 @@ def run_worker(args: argparse.Namespace) -> list[dict[str, float | int]]:
                 append_csv_row(detail_path, DETAIL_FIELDNAMES, row)
 
             print(
-                "    sinkhorn={:.4f}s | tsne={:.4f}s | total={:.4f}s".format(
-                    row["sinkhorn_seconds"],
-                    row["tsne_seconds"],
-                    row["total_seconds"],
-                )
+                timestamped_message(
+                    "    sinkhorn={:.4f}s | tsne={:.4f}s | total={:.4f}s".format(
+                        row["sinkhorn_seconds"],
+                        row["tsne_seconds"],
+                        row["total_seconds"],
+                    )
+                ),
+                flush=True,
             )
 
         summary_row = build_summary_row(group, group_rows)
@@ -402,6 +594,51 @@ def run_worker(args: argparse.Namespace) -> list[dict[str, float | int]]:
 
 def quote_join(parts: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in parts)
+
+
+def timestamped_message(message: str) -> str:
+    return f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}"
+
+
+def make_single_run_command(
+    args: argparse.Namespace,
+    *,
+    run_spec: RunSpec,
+    detail_path: Path | None,
+    summary_path: Path | None = None,
+) -> list[str]:
+    script_path = Path(__file__).resolve()
+    python_bin = sys.executable
+
+    command = [
+        str(python_bin),
+        "-u",
+        str(script_path),
+        "--pairs",
+        f"{run_spec.n0},{run_spec.n1}",
+        "--epsilons",
+        f"{run_spec.epsilon:g}",
+        "--percentages",
+        f"{run_spec.top_pct:g}",
+        "--seeds",
+        str(run_spec.seed),
+        "--n-epochs",
+        str(int(args.n_epochs)),
+        "--tol",
+        f"{float(args.tol):.12g}",
+        "--max-iter",
+        str(int(args.max_iter)),
+    ]
+
+    if detail_path is not None:
+        command.extend(["--save-csv", str(detail_path)])
+    if summary_path is not None:
+        command.extend(["--save-summary-csv", str(summary_path)])
+    command.append("--log-progress")
+    if args.overwrite_output:
+        command.append("--overwrite-output")
+
+    return command
 
 
 def make_worker_command(
@@ -417,6 +654,7 @@ def make_worker_command(
 
     command = [
         str(python_bin),
+        "-u",
         str(script_path),
         "--pairs",
         *[f"{n0},{n1}" for n0, n1 in args.pairs],
@@ -444,10 +682,229 @@ def make_worker_command(
         command.extend(["--save-summary-csv", str(summary_path)])
     if args.output_dir is not None:
         command.extend(["--output-dir", str(Path(args.output_dir).resolve())])
+    if args.log_progress:
+        command.append("--log-progress")
     if args.overwrite_output:
         command.append("--overwrite-output")
 
     return command
+
+
+def make_slurm_submit_command(
+    args: argparse.Namespace,
+    *,
+    job_name: str,
+    log_path: Path,
+    wrapped_command: str,
+) -> list[str]:
+    command = [
+        "sbatch",
+        "--parsable",
+        "--job-name",
+        job_name,
+        "--output",
+        str(log_path),
+        "--error",
+        str(log_path),
+    ]
+    if args.slurm_time is not None:
+        command.extend(["--time", args.slurm_time])
+    if args.slurm_partition is not None:
+        command.extend(["--partition", args.slurm_partition])
+    if args.slurm_account is not None:
+        command.extend(["--account", args.slurm_account])
+    if args.slurm_cpus_per_task is not None:
+        command.extend(["--cpus-per-task", str(int(args.slurm_cpus_per_task))])
+    if args.slurm_mem is not None:
+        command.extend(["--mem", args.slurm_mem])
+    command.extend(args.slurm_extra_arg)
+    command.extend(["--wrap", wrapped_command])
+    return command
+
+
+def parse_detail_csv_row(row: dict[str, str]) -> dict[str, float | int]:
+    int_fields = {"n0", "n1", "seed", "graph_nnz"}
+    parsed: dict[str, float | int] = {}
+    for fieldname in DETAIL_FIELDNAMES:
+        value = row[fieldname]
+        if fieldname in int_fields:
+            parsed[fieldname] = int(value)
+        else:
+            parsed[fieldname] = float(value)
+    return parsed
+
+
+def load_slurm_manifest_rows(manifest_path: Path) -> list[dict[str, str]]:
+    with manifest_path.open(newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def aggregate_slurm_results(args: argparse.Namespace) -> None:
+    output_dir = Path(args.output_dir).resolve()
+    manifest_path = output_dir / "slurm_jobs.csv"
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"Cannot aggregate Slurm results because the manifest does not exist: {manifest_path}"
+        )
+
+    manifest_rows = load_slurm_manifest_rows(manifest_path)
+    if not manifest_rows:
+        raise ValueError(f"No rows found in Slurm manifest: {manifest_path}")
+
+    detail_rows: list[dict[str, float | int]] = []
+    missing_detail_paths: list[Path] = []
+    for manifest_row in manifest_rows:
+        detail_path = Path(manifest_row["detail_csv"])
+        if not detail_path.exists():
+            missing_detail_paths.append(detail_path)
+            continue
+        with detail_path.open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                detail_rows.append(parse_detail_csv_row(row))
+
+    if not detail_rows:
+        raise ValueError(
+            "No completed per-run detail CSVs were found while aggregating Slurm results."
+        )
+
+    detail_output_path = (
+        Path(args.save_csv).resolve()
+        if args.save_csv is not None
+        else output_dir / "slurm_detail.csv"
+    )
+    summary_output_path = (
+        Path(args.save_summary_csv).resolve()
+        if args.save_summary_csv is not None
+        else output_dir / "slurm_summary.csv"
+    )
+
+    remove_if_exists(detail_output_path)
+    remove_if_exists(summary_output_path)
+
+    detail_rows.sort(
+        key=lambda row: (
+            int(row["n0"]),
+            int(row["n1"]),
+            float(row["epsilon"]),
+            float(row["top_pct"]),
+            int(row["seed"]),
+        )
+    )
+    for row in detail_rows:
+        append_csv_row(detail_output_path, DETAIL_FIELDNAMES, row)
+
+    grouped_rows: dict[GroupSpec, list[dict[str, float | int]]] = defaultdict(list)
+    for row in detail_rows:
+        grouped_rows[
+            GroupSpec(
+                n0=int(row["n0"]),
+                n1=int(row["n1"]),
+                epsilon=float(row["epsilon"]),
+                top_pct=float(row["top_pct"]),
+            )
+        ].append(row)
+
+    summary_rows = [
+        build_summary_row(group, rows)
+        for group, rows in sorted(
+            grouped_rows.items(),
+            key=lambda item: (item[0].n0, item[0].n1, item[0].epsilon, item[0].top_pct),
+        )
+    ]
+    for row in summary_rows:
+        append_csv_row(summary_output_path, SUMMARY_FIELDNAMES, row)
+
+    print(f"Aggregated {len(detail_rows)} completed Slurm run(s).")
+    print(f"  detail_csv={detail_output_path}")
+    print(f"  summary_csv={summary_output_path}")
+    if missing_detail_paths:
+        print(f"  missing_runs={len(missing_detail_paths)}")
+        for path in missing_detail_paths[:10]:
+            print(f"    missing_detail={path}")
+        if len(missing_detail_paths) > 10:
+            print("    ...")
+    print_summary(summary_rows)
+
+
+def launch_slurm_runs(args: argparse.Namespace) -> None:
+    run_specs = build_run_specs(args)
+    if not run_specs:
+        raise ValueError("No runs were generated from the requested sweep.")
+
+    output_dir = Path(args.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = output_dir / "slurm_jobs.csv"
+    if args.overwrite_output:
+        remove_if_exists(manifest_path)
+
+    manifest_rows: list[dict[str, str | int | float]] = []
+    total_runs = len(run_specs)
+    for run_index, run_spec in enumerate(run_specs, start=1):
+        run_tag = make_run_tag(run_index, total_runs, run_spec)
+        detail_path, log_path = resolve_slurm_run_paths(output_dir, run_tag)
+        if args.overwrite_output:
+            remove_if_exists(detail_path)
+            remove_if_exists(log_path)
+
+        run_command = make_single_run_command(
+            args,
+            run_spec=run_spec,
+            detail_path=detail_path,
+        )
+        wrapped_command = f"cd {shlex.quote(str(Path.cwd()))} && {quote_join(run_command)}"
+        job_name = f"{args.slurm_job_prefix}-{run_index:04d}"
+        sbatch_command = make_slurm_submit_command(
+            args,
+            job_name=job_name,
+            log_path=log_path,
+            wrapped_command=wrapped_command,
+        )
+        completed = subprocess.run(
+            sbatch_command,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        job_id = completed.stdout.strip()
+
+        manifest_row = {
+            "run_index": run_index,
+            "job_id": job_id,
+            "job_name": job_name,
+            "n0": run_spec.n0,
+            "n1": run_spec.n1,
+            "seed": run_spec.seed,
+            "epsilon": run_spec.epsilon,
+            "top_pct": run_spec.top_pct,
+            "detail_csv": str(detail_path),
+            "log_path": str(log_path),
+            "command": wrapped_command,
+        }
+        manifest_rows.append(manifest_row)
+        append_csv_row(manifest_path, SLURM_MANIFEST_FIELDNAMES, manifest_row)
+
+    print(f"Submitted {len(run_specs)} Slurm job(s).")
+    print(f"Manifest: {manifest_path}")
+    print("Examples:")
+    for row in manifest_rows[:10]:
+        print(
+            f"  job_id={row['job_id']} | {row['job_name']} | "
+            f"n0={row['n0']}, n1={row['n1']}, epsilon={float(row['epsilon']):g}, "
+            f"top_pct={float(row['top_pct']):g}, seed={row['seed']}"
+        )
+    if len(manifest_rows) > 10:
+        print("  ...")
+    print("\nAfter the jobs finish, aggregate them with:")
+    print(
+        f"  {shlex.quote(sys.executable)} {shlex.quote(str(Path(__file__).resolve()))} "
+        f"--pairs {' '.join(shlex.quote(f'{n0},{n1}') for n0, n1 in args.pairs)} "
+        f"--epsilons {' '.join(shlex.quote(f'{float(epsilon):g}') for epsilon in args.epsilons)} "
+        f"--percentages {' '.join(shlex.quote(f'{float(percentage):g}') for percentage in args.percentages)} "
+        f"--seeds {' '.join(shlex.quote(str(int(seed))) for seed in args.seeds)} "
+        f"--output-dir {shlex.quote(str(output_dir))} "
+        "--aggregate-slurm-results"
+    )
 
 
 def launch_tmux_workers(args: argparse.Namespace) -> None:
@@ -533,6 +990,12 @@ def main() -> None:
     args = parse_args()
     if args.launch_tmux:
         launch_tmux_workers(args)
+        return
+    if args.launch_slurm:
+        launch_slurm_runs(args)
+        return
+    if args.aggregate_slurm_results:
+        aggregate_slurm_results(args)
         return
 
     summary_rows = run_worker(args)

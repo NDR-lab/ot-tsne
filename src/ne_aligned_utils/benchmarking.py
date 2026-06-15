@@ -2,13 +2,17 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy.sparse as sp
 from matplotlib.colors import LogNorm
 from matplotlib.lines import Line2D
-from openTSNE import TSNE
-from openTSNE.affinity import Affinities
 
 from ne_aligned_utils.data import make_fig1_data, make_joint_gmm
+from ne_aligned_utils.methods import (
+    build_ot_tsne_four_block_matrix,
+    compute_eot_embedding_from_plan,
+    compute_ot_plan,
+    run_tsne_from_graph,
+    sparsify_four_block_top_percentage,
+)
 from ne_aligned_utils.metrics import (
     compute_concordance,
     compute_cross_concordance,
@@ -16,7 +20,6 @@ from ne_aligned_utils.metrics import (
     compute_kmeans_rand,
 )
 from ne_aligned_utils.transport_plan_sparsify import sparsify_plan_percentage_neighbors
-from ne_aligned_utils.utils import compute_ot_plan
 
 
 METRIC_NAMES = ("concordance", "cross_concordance", "foscttm")
@@ -104,7 +107,7 @@ def compute_ot_plans_for_eps(data_bundle, eps_times, tol=1e-12, max_iter=int(1e4
         data_bundle["ring"]["obs1"],
         eps_times=eps_times,
         tol=tol,
-        maxIter=max_iter,
+        max_iter=max_iter,
     )
 
     gmm_plan = compute_ot_plan(
@@ -112,7 +115,7 @@ def compute_ot_plans_for_eps(data_bundle, eps_times, tol=1e-12, max_iter=int(1e4
         data_bundle["gmm"]["obs1"],
         eps_times=eps_times,
         tol=tol,
-        maxIter=max_iter,
+        max_iter=max_iter,
     )
     gmm_plan = gmm_plan[
         np.ix_(data_bundle["gmm"]["sort_idx0"], data_bundle["gmm"]["sort_idx1"])
@@ -148,10 +151,8 @@ def compute_eot_reference_from_plans(
     }
     for dataset_name in ("ring", "gmm"):
         dataset = data_bundle[dataset_name]
-        embd = build_eot_embedding_from_plan(
+        embd = compute_eot_embedding_from_plan(
             plans[dataset_name]["P"],
-            n0=dataset["n0"],
-            n1=dataset["n1"],
             embd_dim=embd_dim,
             t=t,
         )
@@ -174,8 +175,8 @@ def compute_eot_reference_from_plans(
 def build_four_block_matrices(plans):
     return {
         "eps_times": float(plans["eps_times"]),
-        "ring": {"matrix": build_four_block_matrix(plans["ring"]["P"])},
-        "gmm": {"matrix": build_four_block_matrix(plans["gmm"]["P"])},
+        "ring": {"matrix": build_ot_tsne_four_block_matrix(plans["ring"]["P"])},
+        "gmm": {"matrix": build_ot_tsne_four_block_matrix(plans["gmm"]["P"])},
     }
 
 
@@ -206,13 +207,13 @@ def run_top_pct_neighbors_benchmark(
                 f"[Top % Neighbors | eps_times={block_matrices['eps_times']:g}] "
                 f"calculating pct={pct:g}% ..."
             )
-        ring_graph = sparsify_top_percentage_neighbors_graph(
+        ring_graph = sparsify_four_block_top_percentage(
             block_matrices["ring"]["matrix"],
             percentage=float(pct) / 100.0,
             n0=data_bundle["ring"]["n0"],
             n1=data_bundle["ring"]["n1"],
         )
-        gmm_graph = sparsify_top_percentage_neighbors_graph(
+        gmm_graph = sparsify_four_block_top_percentage(
             block_matrices["gmm"]["matrix"],
             percentage=float(pct) / 100.0,
             n0=data_bundle["gmm"]["n0"],
@@ -243,8 +244,8 @@ def run_top_pct_neighbors_benchmark(
         gmm_viz_metrics = None
 
         for seed in tsne_seeds:
-            ring_embd = run_tsne_from_graph(ring_graph, seed=seed, n_epochs=n_epochs)
-            gmm_embd = run_tsne_from_graph(gmm_graph, seed=seed, n_epochs=n_epochs)
+            ring_embd = run_tsne_from_graph(ring_graph, random_state=seed, n_epochs=n_epochs)
+            gmm_embd = run_tsne_from_graph(gmm_graph, random_state=seed, n_epochs=n_epochs)
 
             ring_metric_row = metric_triplet(
                 data_bundle["ring"]["clean0"],
@@ -331,7 +332,7 @@ def prepare_sparse_plan_four_block_matrix(
         raise ValueError(f"diag_threshold must be non-negative, got {diag_threshold}.")
 
     n0, n1 = P_sparse.shape
-    four_block = build_four_block_matrix(P_sparse)
+    four_block = build_ot_tsne_four_block_matrix(P_sparse)
     prepared = np.zeros_like(four_block, dtype=float)
 
     diag00 = np.array(four_block[:n0, :n0], copy=True)
@@ -492,12 +493,12 @@ def run_sparse_plan_top_pct_neighbors_benchmark(
         for seed in tsne_seeds:
             ring_embd = run_tsne_from_graph(
                 dataset_prepared["ring"]["graph"],
-                seed=seed,
+                random_state=seed,
                 n_epochs=n_epochs,
             )
             gmm_embd = run_tsne_from_graph(
                 dataset_prepared["gmm"]["graph"],
-                seed=seed,
+                random_state=seed,
                 n_epochs=n_epochs,
             )
 
@@ -1072,6 +1073,43 @@ def build_metric_heatmap_data(
     }
 
 
+def _coerce_reference_columns(heatmap_data, panel):
+    eps_count = len(heatmap_data["eps_times"])
+
+    if "reference_columns" in panel:
+        reference_columns = []
+        for reference_column in panel["reference_columns"]:
+            if isinstance(reference_column, dict):
+                label = str(reference_column["label"])
+                values = reference_column["values"]
+            else:
+                label, values = reference_column
+
+            values = np.asarray(values, dtype=float).reshape(-1)
+            if values.shape != (eps_count,):
+                raise ValueError(
+                    f"Reference column {label!r} must have shape {(eps_count,)}, "
+                    f"got {values.shape}."
+                )
+            reference_columns.append({"label": label, "values": values})
+
+        if not reference_columns:
+            raise ValueError("reference_columns must contain at least one column.")
+        return reference_columns
+
+    if "eot_column" not in panel:
+        raise ValueError("Each panel must define either reference_columns or eot_column.")
+
+    eot_label = f"EOT {heatmap_data['eot_t']:g}" if "eot_t" in heatmap_data else "EOT"
+    eot_values = np.asarray(panel["eot_column"], dtype=float).reshape(-1)
+    if eot_values.shape != (eps_count,):
+        raise ValueError(
+            f"EOT reference column must have shape {(eps_count,)}, got {eot_values.shape}."
+        )
+
+    return [{"label": eot_label, "values": eot_values}]
+
+
 def compute_shared_dataset_scale_bounds(heatmap_data_items):
     if isinstance(heatmap_data_items, dict):
         if "datasets" in heatmap_data_items:
@@ -1087,7 +1125,13 @@ def compute_shared_dataset_scale_bounds(heatmap_data_items):
     bounds_by_dataset = {}
     for heatmap_data in items:
         for dataset_name, panel in heatmap_data["datasets"].items():
-            panel_values = np.concatenate([panel["top_pct_matrix"].ravel(), panel["eot_column"]])
+            reference_columns = _coerce_reference_columns(heatmap_data, panel)
+            panel_values = np.concatenate(
+                [
+                    panel["top_pct_matrix"].ravel(),
+                    *[reference_column["values"] for reference_column in reference_columns],
+                ]
+            )
             panel_vmin = float(np.min(panel_values))
             panel_vmax = float(np.max(panel_values))
 
@@ -1115,9 +1159,20 @@ def plot_metric_heatmap_grid(
     annotate_cells=False,
 ):
     dataset_names = tuple(heatmap_data["dataset_names"])
+    reference_column_counts = [
+        len(_coerce_reference_columns(heatmap_data, heatmap_data["datasets"][dataset_name]))
+        for dataset_name in dataset_names
+    ]
+    max_reference_column_count = max(reference_column_counts, default=1)
     if figsize is None:
         figsize = (
-            1.1 * len(dataset_names) * max(5.0, 0.6 * heatmap_data["top_pct_column_count"]) + 2.2,
+            1.1
+            * len(dataset_names)
+            * max(
+                5.0,
+                0.6 * heatmap_data["top_pct_column_count"] + 0.95 * max_reference_column_count,
+            )
+            + 2.2,
             1.25 * len(heatmap_data["eps_times"]) + 2.8,
         )
 
@@ -1131,7 +1186,10 @@ def plot_metric_heatmap_grid(
             np.concatenate(
                 [
                     panel["top_pct_matrix"].ravel(),
-                    panel["eot_column"].ravel(),
+                    *[
+                        reference_column["values"].ravel()
+                        for reference_column in _coerce_reference_columns(heatmap_data, panel)
+                    ],
                 ]
             )
             for panel in heatmap_data["datasets"].values()
@@ -1146,15 +1204,19 @@ def plot_metric_heatmap_grid(
 
     for col_idx, dataset_name in enumerate(dataset_names):
         panel = heatmap_data["datasets"][dataset_name]
+        reference_columns = _coerce_reference_columns(heatmap_data, panel)
         panel_grid = outer_grid[0, col_idx].subgridspec(
             1,
-            3,
-            width_ratios=[heatmap_data["top_pct_column_count"], 1.15, 0.9],
+            len(reference_columns) + 2,
+            width_ratios=[heatmap_data["top_pct_column_count"], *([1.15] * len(reference_columns)), 0.9],
             wspace=0.08,
         )
         ax_main = fig.add_subplot(panel_grid[0, 0])
-        ax_eot = fig.add_subplot(panel_grid[0, 1], sharey=ax_main)
-        cax = fig.add_subplot(panel_grid[0, 2])
+        reference_axes = [
+            fig.add_subplot(panel_grid[0, ref_idx + 1], sharey=ax_main)
+            for ref_idx in range(len(reference_columns))
+        ]
+        cax = fig.add_subplot(panel_grid[0, len(reference_columns) + 1])
 
         if scale_bounds_by_dataset is not None and dataset_name in scale_bounds_by_dataset:
             vmin, vmax = scale_bounds_by_dataset[dataset_name]
@@ -1164,7 +1226,12 @@ def plot_metric_heatmap_grid(
             vmin = global_vmin
             vmax = global_vmax
         else:
-            panel_values = np.concatenate([panel["top_pct_matrix"].ravel(), panel["eot_column"]])
+            panel_values = np.concatenate(
+                [
+                    panel["top_pct_matrix"].ravel(),
+                    *[reference_column["values"] for reference_column in reference_columns],
+                ]
+            )
             vmin = float(np.min(panel_values))
             vmax = float(np.max(panel_values))
 
@@ -1176,14 +1243,18 @@ def plot_metric_heatmap_grid(
             vmin=vmin,
             vmax=vmax,
         )
-        eot_image = ax_eot.imshow(
-            panel["eot_column"][:, None],
-            aspect="auto",
-            interpolation="nearest",
-            cmap=cmap_obj,
-            vmin=vmin,
-            vmax=vmax,
-        )
+        reference_images = []
+        for ax_reference, reference_column in zip(reference_axes, reference_columns):
+            reference_images.append(
+                ax_reference.imshow(
+                    reference_column["values"][:, None],
+                    aspect="auto",
+                    interpolation="nearest",
+                    cmap=cmap_obj,
+                    vmin=vmin,
+                    vmax=vmax,
+                )
+            )
 
         ax_main.set_title(dataset_name.upper(), fontsize=13, fontweight="bold", pad=8)
         ax_main.set_xlabel("Top neighbors retained")
@@ -1196,14 +1267,18 @@ def plot_metric_heatmap_grid(
         ax_main.set_yticks(np.arange(len(heatmap_data["y_labels"])))
         ax_main.set_yticklabels(heatmap_data["y_labels"])
 
-        ax_eot.set_xlabel("Reference")
-        ax_eot.set_xticks([0])
-        ax_eot.set_xticklabels([f"EOT {heatmap_data['eot_t']:g}"], rotation=45, ha="right")
-        ax_eot.tick_params(axis="y", left=False, labelleft=False)
+        for ref_idx, (ax_reference, reference_column) in enumerate(
+            zip(reference_axes, reference_columns)
+        ):
+            if ref_idx == len(reference_axes) // 2:
+                ax_reference.set_xlabel("Reference")
+            ax_reference.set_xticks([0])
+            ax_reference.set_xticklabels([reference_column["label"]], rotation=45, ha="right")
+            ax_reference.tick_params(axis="y", left=False, labelleft=False)
 
         # Notebook sessions often enable global axes grids; turn them off so
         # each heatmap value renders as a single uninterrupted cell.
-        for axis in (ax_main, ax_eot):
+        for axis in (ax_main, *reference_axes):
             axis.grid(False, which="both")
             axis.minorticks_off()
 
@@ -1227,36 +1302,44 @@ def plot_metric_heatmap_grid(
                     )
 
         if annotate_eot:
-            for row_idx, value in enumerate(panel["eot_column"]):
-                text_color = "white" if (value - vmin) / value_span < 0.55 else "#1f1f1f"
-                ax_eot.text(
-                    0,
-                    row_idx,
-                    f"{value:.2g}",
-                    ha="center",
-                    va="center",
-                    fontsize=8.5,
-                    color=text_color,
-                    fontweight="semibold",
-                )
+            for ax_reference, reference_column in zip(reference_axes, reference_columns):
+                for row_idx, value in enumerate(reference_column["values"]):
+                    text_color = "white" if (value - vmin) / value_span < 0.55 else "#1f1f1f"
+                    ax_reference.text(
+                        0,
+                        row_idx,
+                        f"{value:.2g}",
+                        ha="center",
+                        va="center",
+                        fontsize=8.5,
+                        color=text_color,
+                        fontweight="semibold",
+                    )
 
-        colorbar = fig.colorbar(eot_image, cax=cax)
+        colorbar = fig.colorbar(reference_images[-1] if reference_images else image, cax=cax)
         colorbar.set_label("Metric value")
         colorbar.ax.grid(False, which="both")
         colorbar.ax.minorticks_off()
 
         axes[dataset_name] = {
             "main": ax_main,
-            "eot": ax_eot,
+            "references": reference_axes,
+            "eot": reference_axes[0] if reference_axes else None,
             "colorbar": cax,
         }
 
     axes[dataset_names[0]]["main"].set_ylabel("eps_times")
 
     if title is None:
+        reference_labels = ", ".join(
+            reference_column["label"]
+            for reference_column in _coerce_reference_columns(
+                heatmap_data, heatmap_data["datasets"][dataset_names[0]]
+            )
+        )
         title = (
             f"{heatmap_data['metric_label']} across eps_times and top-neighbor percentages "
-            f"(EOT t={heatmap_data['eot_t']})"
+            f"({reference_labels})"
         )
 
     fig.suptitle(title, fontsize=16, y=1.03)
@@ -1283,27 +1366,6 @@ def make_eps_eot_cache_path(cache_dir, eps_times):
 
 def format_eps_token(eps_times):
     return f"{float(eps_times):g}".replace("-", "m").replace(".", "p")
-
-
-def build_eot_embedding_from_plan(P, n0, n1, embd_dim=2, t=1):
-    U, singular_values, Vt = np.linalg.svd(np.asarray(P, dtype=float), full_matrices=False)
-    left = U[:, 1 : 1 + embd_dim] * (singular_values[1 : 1 + embd_dim] ** t) * np.sqrt(n0)
-    right = (
-        Vt.T[:, 1 : 1 + embd_dim]
-        * (singular_values[1 : 1 + embd_dim] ** t)
-        * np.sqrt(n1)
-    )
-    return np.concatenate([left, right], axis=0)
-
-
-def build_four_block_matrix(P):
-    n0, n1 = P.shape
-    U, singular_values, Vt = np.linalg.svd(np.asarray(P, dtype=float), full_matrices=False)
-    eot = np.concatenate([U * np.sqrt(n0), Vt.T * np.sqrt(n1)], axis=0)
-    matrix = eot @ np.diag(singular_values) @ eot.T / np.sqrt(n0 * n1)
-    matrix[matrix < 0] = 0.0
-    np.fill_diagonal(matrix, 0.0)
-    return matrix
 
 
 def metric_triplet(clean0, clean1, embd, k_conc=50, k_cross=50):
@@ -1628,63 +1690,6 @@ def save_eot_reference_cache(cache_path, eot_reference, plans, data_bundle):
     )
 
 
-def run_tsne_from_graph(graph, seed=0, n_epochs=200):
-    graph = np.asarray(graph, dtype=float)
-    graph = np.nan_to_num(graph, nan=0.0, posinf=0.0, neginf=0.0)
-    graph[graph < 0] = 0.0
-    np.fill_diagonal(graph, 0.0)
-    total_mass = float(graph.sum())
-    if total_mass <= 0:
-        raise ValueError("Graph has zero total mass; cannot run t-SNE.")
-    graph = graph / total_mass
-
-    n_points = graph.shape[0]
-    init = np.random.RandomState(seed).randn(n_points, 2) * 1e-4
-    n_early = int(n_epochs) // 3
-    n_late = int(n_epochs) - n_early
-
-    affinities = Affinities()
-    affinities.P = sp.csr_matrix(graph)
-    embedder = TSNE(
-        n_components=2,
-        random_state=int(seed),
-        verbose=False,
-        early_exaggeration_iter=n_early,
-        n_iter=n_late,
-    )
-    return np.asarray(embedder.fit(affinities=affinities, initialization=init))
-
-
-def sparsify_top_percentage_neighbors_graph(M, percentage, n0, n1, ensure_nonempty=True):
-    M = _validate_nonnegative_matrix(M)
-    p = _validate_percentage(percentage)
-    n0 = int(n0)
-    n1 = int(n1)
-    if M.shape != (n0 + n1, n0 + n1):
-        raise ValueError(
-            f"Expected a square 4-block matrix with shape {(n0 + n1, n0 + n1)}, got {M.shape}."
-        )
-
-    mask = np.zeros_like(M, dtype=bool)
-    for row_slice, col_slice in (
-        (slice(0, n0), slice(0, n0)),
-        (slice(0, n0), slice(n0, n0 + n1)),
-        (slice(n0, n0 + n1), slice(0, n0)),
-        (slice(n0, n0 + n1), slice(n0, n0 + n1)),
-    ):
-        block = M[row_slice, col_slice]
-        block_mask = _top_percentage_neighbors_block_mask(block, p)
-        if ensure_nonempty:
-            block_mask = _ensure_nonempty_mask(block_mask, block)
-        mask[row_slice, col_slice] = block_mask
-
-    np.fill_diagonal(mask, False)
-    out = np.where(mask, M, 0.0)
-    out = np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
-    out[out < 0] = 0.0
-    return out
-
-
 def _lognorm_for_plan(P):
     values = np.asarray(P)[np.asarray(P) > 0]
     if values.size == 0:
@@ -1697,74 +1702,11 @@ def _lognorm_for_plan(P):
     return LogNorm(vmin=vmin, vmax=vmax)
 
 
-def _validate_nonnegative_matrix(M):
-    M = np.asarray(M, dtype=float)
-    if M.ndim != 2:
-        raise ValueError(f"Expected a 2D matrix, got shape {M.shape}.")
-    if np.any(M < 0):
-        raise ValueError("Expected a non-negative matrix.")
-    return M
-
-
-def _validate_percentage(percentage):
-    percentage = float(percentage)
-    if not (0.0 < percentage <= 1.0):
-        raise ValueError(f"percentage must be in (0, 1], got {percentage}.")
-    return percentage
-
-
-def _top_percentage_neighbors_block_mask(block, percentage):
-    n_rows, n_cols = block.shape
-    row_k = max(1, int(np.ceil(percentage * n_cols)))
-    col_k = max(1, int(np.ceil(percentage * n_rows)))
-    return _row_or_col_topk_mask(block, row_k=row_k, col_k=col_k)
-
-
-def _row_or_col_topk_mask(block, row_k, col_k):
-    n_rows, n_cols = block.shape
-    row_k = min(max(1, int(row_k)), n_cols)
-    col_k = min(max(1, int(col_k)), n_rows)
-    mask = np.zeros_like(block, dtype=bool)
-
-    if row_k >= n_cols:
-        mask[:, :] = True
-    else:
-        row_idx = np.argpartition(block, n_cols - row_k, axis=1)[:, -row_k:]
-        rows = np.arange(n_rows, dtype=int)[:, None]
-        mask[rows, row_idx] = True
-
-    if col_k >= n_rows:
-        mask[:, :] = True
-    else:
-        col_idx = np.argpartition(block, n_rows - col_k, axis=0)[-col_k:, :]
-        cols = np.arange(n_cols, dtype=int)[None, :]
-        mask[col_idx, cols] = True
-
-    return mask
-
-
-def _ensure_nonempty_mask(mask, block):
-    mask = np.array(mask, dtype=bool, copy=True)
-    empty_rows = np.where(~mask.any(axis=1))[0]
-    if empty_rows.size > 0:
-        row_argmax = np.argmax(block[empty_rows], axis=1)
-        mask[empty_rows, row_argmax] = True
-
-    empty_cols = np.where(~mask.any(axis=0))[0]
-    if empty_cols.size > 0:
-        col_argmax = np.argmax(block[:, empty_cols], axis=0)
-        mask[col_argmax, empty_cols] = True
-
-    return mask
-
-
 __all__ = [
     "METRIC_NAMES",
     "PLOT_COLORS",
     "PLOT_LABELS",
-    "build_eot_embedding_from_plan",
     "build_four_block_matrices",
-    "build_four_block_matrix",
     "prepare_sparse_plan_four_block_matrix",
     "postprocess_graph_matrix",
     "postprocess_sparse_plan_four_block_graph",
@@ -1791,7 +1733,6 @@ __all__ = [
     "prepare_benchmark_data",
     "run_sparse_plan_top_pct_neighbors_benchmark",
     "run_top_pct_neighbors_benchmark",
-    "run_tsne_from_graph",
     "save_benchmark_cache",
     "save_eot_reference_cache",
     "summarize_metric_lists",
