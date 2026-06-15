@@ -25,6 +25,7 @@ benchmarking_new/**
 !benchmarking_new/
 lupus dataset/
 benchmark_paper.pdf
+original_paper.*
 
 # Generated reports: keep compact CSV summaries, ignore rendered figures
 results/**/figures/
