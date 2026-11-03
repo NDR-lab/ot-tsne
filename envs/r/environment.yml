@@ -1,0 +1,47 @@
+# rverify -- the R environment behind seurat-*, liger-* and bc-tsne.
+#
+# Consumed by: src/ne_aligned_utils/methods/external/r.py, via
+#   NE_ALIGNED_RSCRIPT="<root>/bin/micromamba run -n rverify Rscript"
+#
+# Versions are those installed in the working osx-arm64 env on 2026-09-03, read from
+# `micromamba list -n rverify`. Only the explicitly requested packages are pinned
+# (`micromamba env export --from-history`) plus the two the R scripts `library()` directly.
+# The remaining ~140 transitive packages are left to the solver on purpose: pinning the full
+# closure would carry osx-arm64 build strings and OpenMP choices that do not exist on linux-64.
+# envs/r/rverify-osx-arm64-full.txt records that closure for drift diagnosis.
+#
+# No build strings and no hashes: every pin below is a version only, so conda-forge supplies
+# the linux-64 build of each.
+
+name: rverify
+
+channels:
+  - conda-forge
+
+dependencies:
+  # --- interpreter ---------------------------------------------------------------------------
+  - r-base=4.5.3
+
+  # --- the HDF5 file contract with Python ----------------------------------------------------
+  # io.R does `library(hdf5r)`; the Python side writes the same files with h5py.
+  - r-hdf5r=1.3.12
+
+  # --- methods -------------------------------------------------------------------------------
+  - r-seurat=5.5.1          # seurat.R: seurat-2d, seurat-50-tsne
+  - r-seuratobject=5.4.0    # pinned because Seurat 5.x is strict about the pair
+  - r-matrix=1.7_5          # seurat.R does `library(Matrix)` explicitly
+  - r-rtsne=0.17            # used by bcTSNE and rliger
+  - r-rspectra=0.16_2       # used by bcTSNE
+
+  # --- toolchain for the two packages built from source ---------------------------------------
+  # rliger and bcTSNE are not on conda-forge at the versions we need, so they are compiled by
+  # envs/r/install-cran-extras.sh. These four are what that build needs.
+  - r-remotes=2.5.0
+  - r-rcpp=1.1.2
+  - r-rcpparmadillo=15.4.2_1
+  - r-rcppeigen=0.3.4.0.2
+  - r-rcppprogress=0.4.2
+  - c-compiler=1.11.0       # metapackage: clang on osx-arm64, gcc on linux-64
+  - cxx-compiler=1.11.0
+  - fortran-compiler=1.11.0
+  - make=4.4.1              # bcTSNE's DESCRIPTION declares `SystemRequirements: GNU make`

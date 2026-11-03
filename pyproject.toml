@@ -1,0 +1,92 @@
+[project]
+name = "ne-aligned"
+version = "0.1.0"
+description = "Aligned nonlinear embedding utilities and benchmark reports"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "anndata>=0.12.3",
+    "harmonypy>=0.0.10",
+    "h5py>=3.14.0",
+    "matplotlib>=3.10.5",
+    "nbclient>=0.10.2",
+    "nbformat>=5.10.4",
+    "numba>=0.61.2",
+    "numpy>=2.2.6",
+    "opentsne>=1.0.2",
+    "pandas>=2.3.2",
+    "pillow>=12.2.0",
+    "pot[backend-torch]>=0.9.5",
+    "requests>=2.32.5",
+    "scanorama>=1.7.4",
+    "scanpy>=1.11.5",
+    "scikit-misc>=0.5.1",
+    "scikit-learn>=1.7.1",
+    "scvi-tools>=1.1.0",
+    "scipy>=1.16.1",
+    "threadpoolctl>=3.6.0",
+    "torch>=2.8.0",
+    "torchvision>=0.23.0",
+    "umap-learn>=0.5.9.post2",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ne_aligned_utils = [
+    "paper/styles/*.mplstyle",
+    "methods/external/r_scripts/*.R",
+    "methods/external/r_scripts/*.md",
+    "methods/external/py_scripts/*.py",
+    "methods/external/py_scripts/*.md",
+    # Include the rc-tsne source and its licence files in installed packages.
+    "methods/external/vendor/*.md",
+    "methods/external/vendor/rctsne/*.md",
+    "methods/external/vendor/rctsne/*.py",
+    "methods/external/vendor/rctsne/LICENSE",
+    "methods/external/vendor/rctsne/data/*.csv",
+    "methods/external/vendor/rctsne/src/*.cpp",
+    "methods/external/vendor/rctsne/src/*.h",
+    "methods/external/vendor/rctsne/src/progress_bar/*",
+    "methods/external/vendor/rctsne/src/winlibs/*",
+]
+
+[dependency-groups]
+dev = [
+    "jupyterlab>=4.4.6",
+    "pytest>=9.0.0",
+    "ruff>=0.14",
+]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = [
+    "notebooks",
+    "legacy",
+    "baseline",
+    "*.md",
+    "src/ne_aligned_utils/methods/external/vendor",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = [
+    # These fixes may change behavior or generated LaTeX.
+    "B905",
+    "UP031",
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+
+[tool.ruff.lint.per-file-ignores]
+# The tests deliberately import after adjusting sys.path or after installing a stub module.
+"tests/*" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

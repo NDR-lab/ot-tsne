@@ -1,0 +1,20 @@
+## Appendix overrides. Applied *on top of* style.mplstyle, never instead of it:
+##
+##     plt.style.use(["style.mplstyle", "style_appendix.mplstyle"])
+##
+## mplstyle files cannot include one another, so inheritance is by list order. Only the values
+## that differ belong here; everything else is inherited, which is why this file is short and
+## should stay short.
+##
+## Appendix figures get larger panels and more room, and are allowed to be rougher. They should
+## not be over-optimised: their job is completeness, not polish.
+
+font.size                         : 10
+axes.titlesize                    : 10
+axes.labelsize                    : 10
+xtick.labelsize                   : 9
+ytick.labelsize                   : 9
+legend.fontsize                   : 9
+lines.markersize                  : 6
+figure.constrained_layout.h_pad   : 0.04
+figure.constrained_layout.w_pad   : 0.04

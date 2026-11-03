@@ -1,0 +1,43 @@
+{
+  "identity": {
+    "batch_names": [
+      "COV-5-D13",
+      "COV-5-D1"
+    ],
+    "cell_ids_sha256": {
+      "data1": "8528667fbf15c364ba0721d45526c6e89c14fff63c8b28958e0fedd25b6f0d12",
+      "data2": "4509462be3f6a59c90e478cea6c51dfd71e4d8ec3c4f1edde269706f8960dc5a"
+    },
+    "dataset": "nCoV",
+    "loader": "load_ncov",
+    "policy": {
+      "feature_selection": "scanpy.seurat_v3_batch_aware_raw_counts",
+      "joint_pca_components": 50,
+      "min_cells_per_gene": 3,
+      "min_genes_per_cell": 10,
+      "n_top_genes": 1000,
+      "normalization": "normalize_total_1e4_then_log1p"
+    },
+    "preprocessing_seed": 0,
+    "representations_sha256": {
+      "X1": "a9c866ab03b979e9cad81e214bb78439d61e66a432472001aeb030bc6d216a33",
+      "X1_counts": "400b46a774eb9e9e6d1e7a0d8c7c6eba2a3ad567b350c6fc1e688232954663e7",
+      "X1_pca": "ffcc014276054a63266d6a4d5921e55edb318d5a51d1cf6688c18806f7f66642",
+      "X2": "5aa686b7094a9b67041d97bc575b9ddc1f0e89d13c9b7b4aa4655ca493e94c51",
+      "X2_counts": "121ec9da352c95ab866543c3e44bbfd6bdc913c4558f100e98cc987cc0198359",
+      "X2_pca": "e91236a2dd69dedf36427c9e4dff178ba81f028016019132a52ec0b3b152c754"
+    },
+    "schema_version": "unified-real-data-v2",
+    "selected_features_sha256": "453d70a1c90bc8cb4e9cda18d8b57bff0e8c50a5c89dd376a70a5ae58df25d4d",
+    "source_content_sha256": {
+      "Final_nCoV_0716_upload.h5ad": "366ee03597e891ff99438e8fc37be2f962efed85f673d9e10687dd8fc63e6dd2"
+    }
+  },
+  "preprocessing_hash": "2ead46705ca87dde9ab979519240661df73746d644afd5ed04019d5478d0ab76",
+  "provenance": {
+    "output_directory": "/Users/azharakhmetova/ne-aligned/data/benchmark_v2/nCoV",
+    "source_paths": [
+      "/Users/azharakhmetova/ne-aligned/data/nCoV/raw/Final_nCoV_0716_upload.h5ad"
+    ]
+  }
+}
