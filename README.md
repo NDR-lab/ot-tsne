@@ -69,7 +69,7 @@ Inputs are arrays with shapes `(n0, d)` and `(n1, d)`. The result has shape
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `rel_reg` | `1.0` | Entropic regularization relative to the median squared cross-batch distance: `epsilon = rel_reg * median_squared_distance`. Smaller values sharpen the transport plan. |
+| `rel_reg` | `1.0` | Entropic regularization relative to the median squared cross-batch distance: `epsilon = rel_reg * median_squared_distance`. Larger values smoothen the transport plan. |
 | `effective_k` | `15` | Neighbor-selection budget per observation, divided between batches in proportion to their sizes. Symmetrization can increase the final degree. |
 | `random_state` | `0` | Seed for the embedding. |
 | `n_jobs` | `1` | Number of threads for the t-SNE stage. |
@@ -117,9 +117,9 @@ The [example script](examples/ncov.py) generates the figure below.
 
 ### Using your own data
 
-OT-tSNE can be used with any data represented in a shared numerical feature space;
+OT-tSNE can be used with any data represented in a shared feature space;
 it is not restricted to single-cell data. Both batches may contain different numbers of observations.
-The current implementation supports two batches and uses Euclidean distances. Paired observations and labels are not required. For your own data, supply preprocessed features or scores from a shared PCA.
+The current implementation supports two batches and uses Euclidean distances. Paired observations and labels are not required. 
 
 
 ## Method
@@ -135,14 +135,12 @@ The current implementation supports two batches and uses Euclidean distances. Pa
    are similar within a batch when their transport relationships to the other batch are similar.
 3. **Select neighbors.** Retain the strongest affinities under a fixed neighbor budget,
    split proportionally between batches. By default, an edge is kept if either endpoint
-   selects it; retained edges receive equal weight and the graph is normalized.
+   selects it; retained edges receive equal weight, and the graph is normalized.
 4. **Embed.** Optimize a two-dimensional t-SNE layout of this graph using
    [openTSNE](https://github.com/pavlin-policar/openTSNE).
 
 Optimal transport is computed with [POT](https://pythonot.github.io/). The worked example
-uses the main OT-tSNE method (`ot` in the benchmark). Alternative within-batch constructions,
-including kNN, Gram, self-OT, and zero-diagonal variants, are provided for the paper's
-comparisons in [the method implementations](src/ne_aligned_utils/methods/ot_methods.py).
+uses the main OT-tSNE method (`ot` in the benchmark). Alternative within-batch constructions are provided in [the method implementations](src/ne_aligned_utils/methods/ot_methods.py).
 
 ## Notebooks
 
@@ -159,8 +157,8 @@ change cross-batch matching and the resulting embeddings:
 ```text
 src/ne_aligned_utils/
   methods/
-    ot_methods.py          OT-tSNE entry points and variants
-    ot_transport.py        Entropic optimal-transport plans
+    ot_methods.py          OT-tSNE variants
+    ot_transport.py        Entropic optimal-transport plan
     ot_affinity.py         Affinity construction and neighbor selection
     ot_graph.py            Graph initialization and t-SNE optimization
 examples/                  Runnable toy and nCoV examples
@@ -170,7 +168,6 @@ data/nCoV/preprocessed/     Prepared nCoV example inputs
 
 ## Citation
 
-Code for the analyses presented in the paper, including the benchmark and figures, is
-also included. See the [reproduction guide](reproduction/README.md) for setup and execution
+Code for the analyses presented in the paper, including the benchmark and figures, is also included. See the [reproduction guide](reproduction/README.md) for setup and execution
 instructions.
 <!-- Add the selected code license and link to a root LICENSE file before public release. -->
