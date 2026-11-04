@@ -4,13 +4,6 @@ Install the [main Python environment](../README.md#installation) first. Run all 
 below from the repository root. The benchmark compares OT-tSNE and its variants with
 integration and visualization baselines on seven two-batch single-cell datasets.
 
-## OT-tSNE input and memory considerations
-
-The default uses balanced transport with uniform mass per observation. Differences in
-population proportions and populations present in only one batch should therefore be
-considered when interpreting the alignment. The transport calculation stores a dense
-`n0 × n1` plan, so memory use grows with the product of the batch sizes.
-
 ## Benchmark environments
 
 OT-tSNE and most benchmark methods run in the main Python environment managed by `uv`. Four comparison methods require isolated environments because their Python, R or compiled dependencies conflict with the main environment.
@@ -39,7 +32,7 @@ Install the main Python environment first:
 uv sync --locked
 ```
 
-`uv.lock` fixes every package version and hash, and `.python-version` fixes the interpreter (Python 3.11.15; uv downloads it if needed). `--locked` fails instead of re-resolving if the lock is out of date. Add `--group dev` for notebooks.
+`uv.lock` fixes every package version and hash, and `.python-version` fixes the interpreter (Python 3.11.15). `--locked` fails instead of re-resolving if the lock is out of date. Add `--group dev` for notebooks.
 
 Install the isolated method environments:
 
@@ -47,7 +40,7 @@ Install the isolated method environments:
 bash scripts/setup_external_envs.sh
 ```
 
-The first installation can take tens of minutes because several R packages and rc-tSNE are compiled from source. Environments that already exist are never updated in place: a rerun reuses them as they are, installs any pinned R package that is missing, and checks the versions. To rebuild an environment, delete it or choose new locations (see below).
+To rebuild an environment, delete it or choose new locations (see below).
 
 When setup finishes, load the generated launcher variables into the current shell and verify every environment:
 
@@ -56,8 +49,7 @@ source .ne-aligned-env.sh
 uv run python scripts/check_environment.py
 ```
 
-Run `source .ne-aligned-env.sh` in each new terminal or batch job before starting the benchmark. The checker prints one `OK` line for each component and exits with a nonzero status when a required component is unavailable or has the wrong version.
-
+Run `source .ne-aligned-env.sh` in each new terminal or batch job before starting the benchmark to check if the installation was successful.
 To verify only the main Python environment, without requiring the external methods, run:
 
 ```bash
@@ -97,43 +89,12 @@ bash scripts/setup_external_envs.sh
 source /shared/software/ot-tsne/environment.sh
 ```
 
-The default four-hour R timeout accommodates the slowest recorded BC-tSNE runs. Set `NE_ALIGNED_R_TIMEOUT` before installation if your workload requires a different limit; values that are too small terminate otherwise valid tasks.
-
-### Cluster installation
-
-Install the environments once, on a node with network access and a compiler (if your site does not allow work on login nodes, use an interactive or batch job). Place them on storage visible to every compute node, and source the generated launcher file in each job:
-
-```bash
-source /shared/software/ot-tsne/environment.sh
-uv run python scripts/check_environment.py
-bash scripts/submit_benchmark.sh
-```
-
-The launcher file contains absolute paths. Rerun the setup script if the installation is moved to a different location.
-
-### Troubleshooting
-
-If setup fails, correct the reported network, compiler or filesystem problem and rerun:
-
-```bash
-bash scripts/setup_external_envs.sh
-```
-
-Common issues:
-
-- **Launcher variables are missing:** source `.ne-aligned-env.sh` before running the checker or benchmark.
-- **rc-tSNE cannot compile:** install `g++` or `clang++`, or set `CXX` to a working C++ compiler.
-- **A cluster compute node cannot download packages:** run setup on a node that has network access and use a shared installation path.
-- **An R task reaches the time limit:** increase `NE_ALIGNED_R_TIMEOUT`, rerun setup to regenerate the launcher file, and resume the benchmark.
-- **An environment was partially created:** delete that environment's directory (under `$NE_ALIGNED_R_ROOT/mmroot/envs/` or the MultiMAP venv) and rerun the setup command.
-
-Keep the supplied version pins when repairing an environment. Changing a method version changes the benchmark configuration and can make results incomparable with the release.
+The default four-hour R timeout accommodates the slowest recorded BC-tSNE runs. 
 
 ### Reference hardware
 
 The reference results were computed on Intel Xeon Gold 6240 nodes with four threads per
-benchmark task. Layouts can vary across CPU models and thread counts; compare metrics
-within seed-to-seed variation rather than expecting identical coordinates.
+benchmark task. 
 
 ---
 
@@ -163,14 +124,12 @@ Preprocessing uses **Scanpy 1.11.5** on the pinned Python 3.11 (`uv.lock` resolv
 
 ## Obtain the data
 
-The checkout includes only the compact nCoV example inputs under
-`data/nCoV/preprocessed/`. Full benchmark inputs, including count matrices and metadata,
-must be obtained separately. The required raw file names for each dataset are declared
+The checkout includes only the nCoV example inputs under
+`data/nCoV/preprocessed/`. The required raw file names for each dataset are declared
 in [configs/benchmark.toml](../configs/benchmark.toml).
 
 For benchmark preprocessing, place raw files in the layout below. The preparation script
-creates `data/benchmark/<dataset>/` when run; this generated directory is not included
-in the checkout.
+creates `data/benchmark/<dataset>/` when run.
 
 ```text
 data/
@@ -246,9 +205,6 @@ preprocessing_manifest.json
 
 `preprocessing_manifest.json` records hashes of the source files and generated content.
 
-Floating-point PCA bytes can vary across numerical platforms. Use the same prepared
-inputs as the reference run when comparing preprocessing hashes.
-
 ---
 
 ## Smoke test
@@ -269,11 +225,6 @@ run
 → score
 → validate
 ```
-
-The current nCoV smoke profile contains **23 tasks**, with four CPU threads requested per task by default. Runtime depends on the hardware and method environments.
-
-It exercises the complete pipeline, including the external method environments.
-
 ---
 
 ## Reproduce the benchmark
@@ -303,22 +254,6 @@ uv run python scripts/run_benchmark.py reproduce --dataset nCoV
 4. scores the resulting embeddings;
 
 5. validates the outputs.
-
-An interrupted run can therefore be resumed by running the same command again.
-
-### Cluster run
-
-On a Slurm cluster:
-
-```bash
-bash scripts/submit_benchmark.sh
-```
-
-The script submits independent jobs for each dataset and experiment, followed by one dependent finalization job for scoring and validation.
-
-The repository contains no site-specific Slurm settings. Supply account, partition, wall time, memory, CPUs, and other scheduler options through your cluster's usual `SBATCH_*` environment variables or through a local wrapper.
-
-Some comparison methods require several hours on the largest datasets.
 
 ### Results
 
