@@ -17,7 +17,7 @@ preserving meaningful structure, without requiring paired observations or labels
 Install with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-git clone https://github.com/azharakhmetova/ot-tsne.git
+git clone https://github.com/NDR-lab/ot-tsne.git
 cd ot-tsne
 uv sync --locked
 ```
