@@ -1,0 +1,25 @@
+diff --git a/DESCRIPTION b/DESCRIPTION
+index 76cdf5a..aa05038 100644
+--- a/DESCRIPTION
++++ b/DESCRIPTION
+@@ -23,8 +23,7 @@ Imports:
+     RSpectra,
+     utils,
+     Rtsne,
+-    graphics,
+-    splatter
++    graphics
+ Suggests: 
+     data.table,
+     batchelor,
+diff --git a/src/bcTSNE-init.c b/src/bcTSNE-init.c
+index 959cf28..9048c3f 100644
+--- a/src/bcTSNE-init.c
++++ b/src/bcTSNE-init.c
+@@ -28,5 +28,5 @@ static const R_CMethodDef cMethods[] = {
+ void R_init_bcTSNE(DllInfo *dll) {
+   R_registerRoutines(dll, cMethods, NULL, NULL, NULL);
+   R_useDynamicSymbols(dll, FALSE); 
+-  R_forceSymbols(dll, TRUE);
++  R_forceSymbols(dll, FALSE);
+ }

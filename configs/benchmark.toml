@@ -1,0 +1,187 @@
+schema_version = 1
+name = "benchmark"
+data_root = "data/benchmark"
+result_root = "results/benchmark"
+
+[seeds]
+preprocessing = 0
+sample = 0
+downstream = [0, 1, 2]
+
+[preprocessing]
+population_selection = "dataset_adapter_before_common_qc"
+min_genes_per_cell = 10
+min_cells_per_gene = 3
+feature_selection = "scanpy.seurat_v3_batch_aware_raw_counts"
+selected_genes = 1000
+normalization_target = 10000.0
+transformation = "log1p"
+joint_pca_components = 50
+
+[profiles.smoke]
+downstream_seeds = [0]
+canonical_only = true
+
+[grid]
+rel_reg = [1.0]
+canonical_rel_reg = 1.0
+effective_k = [15]
+
+[settings]
+embedding_dim = 2
+# openTSNE's defaults for both the 50D tails and the OT layouts: 250 exaggerated iterations,
+# then visualization_epochs main-phase iterations. Methods with their own optimiser (rc-tsne,
+# ref, bc-tsne, multimap) ignore both.
+tsne_early_exaggeration_iter = 250
+visualization_epochs = 500
+# seurat-*, liger-* and ref normalise the selected genes' counts by each cell's all-gene total,
+# the same divisor the processed features and joint PCs were normalised with.
+count_library_size = "all_genes"
+pca_components = 50
+perplexity = 30.0
+n_neighbors = 15
+multimap_native = true
+# Revised ct-SNE's suggested starting point (paper, Sec. 4.2: "beta=1e-4 for revised ct-SNE");
+# the authors' code defaults to 0.1, the value for the original ct-SNE.
+rc_tsne_beta = 0.0001
+ref_initialization_seed = "task_seed"
+ot_init = "random"
+ot_tolerance = 1e-12
+ot_max_iterations = 10000
+
+[resources.cpu]
+threads = 4
+device = "cpu"
+
+[datasets.nCoV]
+enabled = true
+raw_adapter = "load_ncov"
+source_files = ["data/nCoV/raw/Final_nCoV_0716_upload.h5ad"]
+sample_policy = "all_cells"
+
+[datasets.human_brain]
+enabled = true
+raw_adapter = "load_human_brain"
+source_files = [
+  "data/human_brain/raw/replicates.h5ad",
+  "data/human_brain/raw/cell_metadata.csv",
+]
+sample_policy = "all_cells"
+
+[datasets.lupus]
+enabled = true
+raw_adapter = "load_lupus"
+source_files = ["data/lupus/raw/raw_counts.h5ad"]
+sample_policy = "all_cells"
+
+[datasets.yao_10x_ent_l2l3]
+enabled = true
+raw_adapter = "load_yao"
+source_files = [
+  "data/yao_10x_ent_l2l3/raw/ent_L23.pkl",
+  "data/yao_10x_ent_l2l3/raw/ent_l2l3_meta.csv",
+]
+sample_policy = "all_cells"
+
+[datasets.PBMC]
+enabled = true
+raw_adapter = "load_pbmc"
+source_files = [
+  "data/PBMC/raw/b1_exprs.txt.gz", "data/PBMC/raw/b1_celltype.txt.gz",
+  "data/PBMC/raw/b2_exprs.txt.gz", "data/PBMC/raw/b2_celltype.txt.gz",
+]
+sample_policy = "all_cells"
+
+[datasets.mouse_atlas]
+enabled = true
+raw_adapter = "load_mouse_atlas"
+source_files = [
+  "data/mouse_atlas/raw/filtered_total_batch1_seqwell_batch2_10x.txt.gz",
+  "data/mouse_atlas/raw/filtered_total_sample_ext_organ_celltype_batch.txt.gz",
+]
+sample_policy = "all_cells"
+
+[datasets.hematopoietic]
+enabled = true
+raw_adapter = "load_hematopoietic"
+source_files = [
+  "data/hematopoietic/raw/b1_exprs.txt.gz", "data/hematopoietic/raw/b1_celltype.txt.gz",
+  "data/hematopoietic/raw/b2_exprs.txt.gz", "data/hematopoietic/raw/b2_celltype.txt.gz",
+]
+sample_policy = "all_cells"
+
+[[experiments]]
+name = "main_50d_tsne_cpu"
+enabled = true
+datasets = [
+  "nCoV", "human_brain", "lupus", "PBMC", "mouse_atlas",
+  "hematopoietic", "yao_10x_ent_l2l3",
+]
+kind = "methods"
+pipeline = "integrated_50d_then_common_tsne"
+device = "cpu"
+methods = [
+  "eot-50", "joint", "harmony-50", "scanorama-50",
+  "scvi-50", "seurat-50", "liger-50",
+]
+
+[[experiments]]
+name = "direct_2d_cpu"
+enabled = true
+datasets = [
+  "nCoV", "human_brain", "lupus", "PBMC", "mouse_atlas",
+  "hematopoietic", "yao_10x_ent_l2l3",
+]
+kind = "methods"
+pipeline = "method_produces_final_2d"
+device = "cpu"
+# Historical direct-2D identities, followed by the
+# separately registered complete 2D methods.
+methods = [
+  "joint-pca", "eot-t0", "harmony-2d",
+  "scvi-2d", "scanorama-2d", "seurat-2d", "liger-2d",
+  "ref", "multimap", "rc-tsne", "bc-tsne",
+]
+
+[[experiments]]
+name = "ot_diagonal_cpu"
+enabled = true
+datasets = [
+  "nCoV", "human_brain", "lupus", "PBMC", "mouse_atlas",
+  "hematopoietic", "yao_10x_ent_l2l3",
+]
+kind = "ot_diagonal"
+pipeline = "ot_graph_then_common_tsne"
+device = "cpu"
+methods = [
+  "ot", "ot-gramdiag", "ot-knndiag", "ot-selfotmedian",
+  "ot-zerodiag",
+]
+graph_symmetrizations = ["or"]
+canonical_graph_symmetrization = "or"
+knndiag_symmetrization = "or"
+
+[[experiments]]
+name = "uot_hematopoietic_cpu"
+enabled = false
+datasets = ["hematopoietic"]
+kind = "uot"
+pipeline = "uot_graph_then_common_tsne"
+device = "cpu"
+methods = ["ot-uot-topk", "ot-uot-mass"]
+rel_reg = [1.0]
+# Dimensionless mass-relaxation sweep at fixed entropy regularization.
+rel_reg_m = [0.1, 1.0, 10.0]
+canonical_rel_reg_m = 1.0
+
+[[experiments]]
+name = "yao_ot_device_agreement"
+enabled = false
+datasets = ["yao_10x_ent_l2l3"]
+kind = "ot_device"
+pipeline = "ot_graph_then_common_tsne"
+devices = ["cpu", "cuda"]
+cuda_dtype = "float64"
+methods = ["ot"]
+rel_reg = [1.0]
+graph_symmetrizations = ["or"]
