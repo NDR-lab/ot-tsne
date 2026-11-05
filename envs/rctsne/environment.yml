@@ -1,0 +1,28 @@
+# rctsne -- FFTW for the rc-tsne binary.
+#
+# This env holds no interpreter. It exists only so that scripts/setup/build_rctsne.sh has an
+# fftw3.h and a libfftw3 of known version to compile and link the vendored FIt-SNE fork against;
+# the build script refuses to fall back to a system FFTW. It lives under the same micromamba root
+# as rverify (that root is named `ne-aligned-r` for history, not because this env holds R).
+#
+# Consumed by: src/ne_aligned_utils/methods/external/rctsne.py, indirectly -- it runs the compiled
+#   binary named by NE_ALIGNED_RCTSNE_BIN, which links libfftw3 from this prefix by -rpath.
+#
+# Version is the one installed in the working osx-arm64 env on 2026-09-03, read from
+# `micromamba list -n rctsne`. The other six packages there are the osx-arm64 runtime closure
+# (llvm-openmp, libcxx, libgfortran...); they are deliberately not pinned, because linux-64
+# resolves a different and incompatible set (libgomp, libstdcxx-ng).
+
+name: rctsne
+
+channels:
+  - conda-forge
+
+dependencies:
+  - fftw=3.3.11
+
+  # The build needs a C++ compiler too. On this machine that came from the system (Apple clang),
+  # so it is not in the recorded env. On a cluster without a usable g++, uncomment the next line
+  # to take one from conda-forge -- same metapackage and version as envs/r/environment.yml -- and
+  # run the build with CXX="$MAMBA_ROOT_PREFIX/envs/rctsne/bin/x86_64-conda-linux-gnu-c++".
+  # - cxx-compiler=1.11.0

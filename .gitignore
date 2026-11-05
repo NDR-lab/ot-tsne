@@ -1,0 +1,65 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Local development tools and tests.
+/scripts/dev/
+/tests/
+
+# Environments and local tool state
+.venv/
+.claude/
+.codex
+.ne-aligned-env.sh
+
+# Build artifacts
+build/
+dist/
+*.whl
+
+# Raw and generated benchmark data. Keep documentation and provenance manifests.
+/data/**
+!/data/
+!/data/**/
+!/data/**/README.md
+!/data/**/*manifest.json
+
+# Small prepared inputs for the public nCoV example.
+!/data/nCoV/preprocessed/X1_pca50.npy
+!/data/nCoV/preprocessed/X2_pca50.npy
+!/data/nCoV/preprocessed/labels1.npy
+!/data/nCoV/preprocessed/labels2.npy
+!/data/nCoV/preprocessed/cell_type_names.npy
+!/data/nCoV/preprocessed/dataset_names.npy
+
+# Keep benchmark inputs and local reruns private, including their manifests.
+/data/benchmark/
+/data/local-benchmark/
+
+# Local paper inputs
+lupus dataset/
+benchmark_paper.pdf
+original_paper.*
+
+# Generated reports
+/docs/
+/results/
+/results_eps_times/
+/results_rel_reg/
+/results-cluster/
+/results-cluster-v2/
+meeting slides/
+handoff/
+
+# Runtime logs
+*.log
+slurm-*.out
+results_verify/

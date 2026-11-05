@@ -1,0 +1,121 @@
+## Shared publication figure style.
+##
+## Point sizes match the manuscript's final printed scale. The 7pt floor is reserved for dense
+## appendix panels; ordinary labels, ticks, and legends remain larger.
+##
+## This file sets NO colour cycle, deliberately. Colour comes from
+## ne_aligned_utils.paper.registry, so a panel whose method set changes cannot silently give two
+## unrelated methods the same colour.
+##
+## Nothing that belongs here may be set inline in a notebook. A notebook calling ax.tick_params or
+## assigning to plt.rcParams for something global is a bug in this file.
+
+
+#### * LINES *
+lines.linewidth        : .75
+lines.markersize       : 5
+lines.markeredgewidth  : 0.4
+lines.solid_capstyle   : round
+
+
+#### * FONT *
+## Arial, for every figure in the set. This was Times, chosen so figure text and caption text
+## shared a typeface; the set now reads as a group of figures in its own right, and the thing that
+## has to be consistent is the figures with each other. Half of them had already been switched to
+## Arial one builder at a time, which is the mismatch this removes.
+## The fallbacks are metric-compatible Arial clones, so a Linux box or CI runner degrades
+## imperceptibly instead of jumping to DejaVu. paper.layout.print_preview raises if DejaVu is what
+## actually resolved, because that means no Arial-like font was found.
+font.family            : sans-serif
+font.sans-serif        : Arial, Helvetica, Liberation Sans, Nimbus Sans, Arimo, DejaVu Sans
+font.size              : 9
+## Math in the same face as the labels around it. `dejavusans` would be sans-serif but not Arial,
+## so a symbol would sit in a different sans from the word beside it.
+mathtext.fontset       : custom
+mathtext.rm            : Arial
+mathtext.it            : Arial:italic
+mathtext.bf            : Arial:bold
+mathtext.sf            : Arial
+
+
+#### * AXES *
+axes.titlesize         : 9
+axes.labelsize         : 9
+axes.titlepad          : 3
+axes.labelpad          : 2
+axes.linewidth         : .5
+axes.spines.right      : False
+axes.spines.top        : False
+axes.unicode_minus     : True    ## Unicode minus rather than a hyphen
+## No grid. The benchmark panels are dense scatters at 1.2in and under, where a grid competes with
+## the data for the same few pixels and adds nothing -- every axis is [0, 1] with three ticks.
+## Reference lines that carry meaning (F3's quadrant lines, F4's identity line) are drawn per
+## figure at 0.6pt and are not a grid.
+axes.grid              : False
+
+
+#### * TICKS *
+xtick.direction        : out
+ytick.direction        : out
+xtick.major.width      : .5
+ytick.major.width      : .5
+xtick.minor.width      : .3
+ytick.minor.width      : .3
+xtick.major.size       : 2.5
+ytick.major.size       : 2.5
+xtick.minor.size       : 1
+ytick.minor.size       : 1
+xtick.major.pad        : 1.5
+ytick.major.pad        : 1.5
+xtick.top              : False
+ytick.right            : False
+xtick.minor.visible    : False
+ytick.minor.visible    : False
+xtick.labelsize        : 8
+ytick.labelsize        : 8
+
+
+#### * LEGEND *
+legend.fontsize        : 8
+legend.frameon         : False
+legend.fancybox        : False
+legend.handlelength    : 1.2
+legend.handletextpad   : 0.4
+legend.columnspacing   : 0.8
+legend.labelspacing    : 0.3
+legend.borderpad       : 0.3
+
+
+#### * FIGURE *
+figure.titlesize                  : 10
+figure.constrained_layout.use     : True
+figure.constrained_layout.h_pad   : 0.02
+figure.constrained_layout.w_pad   : 0.02
+figure.constrained_layout.hspace  : 0.03
+figure.constrained_layout.wspace  : 0.03
+figure.dpi                        : 200
+figure.facecolor                  : white
+## A default only. Every figure passes an explicit size from paper.layout, so this never applies
+## -- it is here so a stray plt.figure() is at least text-width rather than 6.4in.
+figure.figsize                    : 5.5, 4.1
+
+
+#### * SCATTER PLOTS *
+scatter.marker         : .
+
+
+#### * SAVING FIGURES *
+savefig.dpi            : 400
+savefig.facecolor      : white
+savefig.format         : pdf
+savefig.transparent    : False
+## `standard`, never `tight`. This is the setting that makes "author at final size" hold.
+## constrained_layout already fits the content; `tight` then re-crops on save and the file stops
+## being the inch size the notebook declared, so \includegraphics[width=\textwidth] silently
+## rescales it and every font size changes. paper.layout.save_figure also hard-codes
+## bbox_inches=None and does not expose the parameter.
+savefig.bbox           : standard
+## TrueType, not Type 3: text stays selectable and searchable, and some venues reject Type 3.
+pdf.fonttype           : 42
+ps.fonttype            : 42
+pdf.compression        : 9
