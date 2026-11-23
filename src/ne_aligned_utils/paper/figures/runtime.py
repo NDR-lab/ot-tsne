@@ -180,7 +180,16 @@ def all_methods(
     family_order = render_context.family_order
     markers = render_context.dataset_markers
     counts = [len(method_order[family]) for family in family_order]
-    fig, axes = runtime_drawing.family_axes(counts, legend_fraction, figsize)
+    fig, axes = runtime_drawing.family_axes(
+        counts,
+        legend_fraction,
+        figsize,
+        method_labels=[
+            render_context.method_labels[key]
+            for family in family_order
+            for key in method_order[family]
+        ],
+    )
 
     lookup = {
         (str(row["method_key"]), str(row["dataset"])): row for row in medians.to_dict("records")

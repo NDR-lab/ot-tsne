@@ -8,6 +8,22 @@ import pandas as pd
 from ne_aligned_utils.paper import layout
 from ne_aligned_utils.paper.rendering.runtime import RuntimeFigureStyle
 
+#: Size of the method names on the y axis, and their gap to the axis, in points.
+METHOD_LABEL_PT = 7.5
+METHOD_LABEL_PAD_PT = 2.0
+#: Left edge of the panels when no method names are given to measure.
+DEFAULT_PANEL_LEFT = 0.255
+
+
+def label_column_width(labels: Sequence[str], *, fontsize: float = METHOD_LABEL_PT) -> float:
+    """Width in inches of the widest label, measured in the current font."""
+    from matplotlib.font_manager import FontProperties
+    from matplotlib.textpath import TextToPath
+
+    prop = FontProperties(size=fontsize)
+    measure = TextToPath().get_text_width_height_descent
+    return max((measure(str(label), prop, ismath=False)[0] for label in labels), default=0.0) / 72
+
 
 def order_by_size(datasets: tuple[str, ...], sizes: dict[str, int]) -> tuple[str, ...]:
     """Sort datasets by increasing cell count, breaking ties and unknown sizes by name."""
@@ -54,8 +70,16 @@ def legend_geometry(
     return ncol, datasets_in / height, (datasets_in + phase_in + style.legend_pad_in) / height
 
 
-def family_axes(counts: list[int], legend_fraction: float, figsize: tuple[float, float]):
+def family_axes(
+    counts: list[int],
+    legend_fraction: float,
+    figsize: tuple[float, float],
+    method_labels: Sequence[str] | None = None,
+):
     """One axis per family, heights proportional to the number of method rows.
+
+    With ``method_labels`` the panels start just right of the widest name, so no blank column is
+    left on the left of the figure; without them they start at ``DEFAULT_PANEL_LEFT``.
 
     ``constrained_layout`` is off for this figure: it distributes space by content, which would give
     the two-row ``No integration`` panel the same height as the seven-row ones and break the shared
@@ -67,7 +91,11 @@ def family_axes(counts: list[int], legend_fraction: float, figsize: tuple[float,
     # None inherits the application's constrained-layout setting; this manual
     # axes layout must disable it explicitly.
     fig = plt.figure(figsize=figsize, layout="none")
-    left, right = 0.255, 0.995
+    left = DEFAULT_PANEL_LEFT
+    if method_labels:
+        column = label_column_width(method_labels) + METHOD_LABEL_PAD_PT / 72
+        left = (layout.TRIM_PAD_IN + column) / figsize[0]
+    right = 0.995
     bottom, top = 0.052, 1.0 - legend_fraction
     gap = 0.016
     total_rows = sum(counts)
@@ -106,8 +134,8 @@ def style_family_axis(
         if row % 2 == 0:
             ax.axhspan(row - 0.5, row + 0.5, color=style.row_band, linewidth=0.0, zorder=0)
     ax.set_yticks(range(len(keys)))
-    ax.set_yticklabels([method_labels[key] for key in reversed(keys)], fontsize=7.5)
-    ax.tick_params(axis="y", length=0.0, pad=2.0)
+    ax.set_yticklabels([method_labels[key] for key in reversed(keys)], fontsize=METHOD_LABEL_PT)
+    ax.tick_params(axis="y", length=0.0, pad=METHOD_LABEL_PAD_PT)
     ax.tick_params(axis="x", which="both", labelbottom=bottom, length=2.0 if bottom else 0.0)
     ax.grid(axis="x", which="major", color="#d9d9d9", linewidth=0.4)
     ax.set_axisbelow(True)

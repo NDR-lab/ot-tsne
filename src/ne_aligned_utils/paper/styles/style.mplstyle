@@ -105,7 +105,7 @@ scatter.marker         : .
 
 
 #### * SAVING FIGURES *
-savefig.dpi            : 400
+savefig.dpi            : 300
 savefig.facecolor      : white
 savefig.format         : pdf
 savefig.transparent    : False

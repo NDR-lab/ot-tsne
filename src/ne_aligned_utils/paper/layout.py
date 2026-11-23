@@ -1,7 +1,8 @@
 """Publication page geometry, figure styling, saving, and print-size checks.
 
-Figures are authored at final printed size. ``save_figure`` therefore disables save-time tight
-cropping, which would change the declared dimensions and trigger silent LaTeX rescaling.
+Figures are authored at final printed size. ``save_figure`` therefore never crops the width, which
+would trigger silent LaTeX rescaling; it only trims blank space above and below the content, and
+the print-size check measures the trimmed height.
 """
 
 from __future__ import annotations
@@ -17,7 +18,9 @@ import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.collections import PathCollection
 from matplotlib.figure import Figure
+from matplotlib.layout_engine import PlaceHolderLayoutEngine
 from matplotlib.text import Text
+from matplotlib.transforms import Bbox
 
 from ne_aligned_utils import config
 
@@ -34,6 +37,13 @@ MARGIN_RIGHT = 0.02
 MARGIN_TOP = 0.18
 MARGIN_BOTTOM = 0.36
 GAP = 0.08
+
+#: Resolution of saved PNGs, and of rasterized parts of vector files: the usual journal
+#: requirement for colour images. Vector text, lines and markers do not depend on it.
+SAVE_DPI = 300
+
+#: Blank space ``save_figure`` keeps above and below the drawn content when it trims, in inches.
+TRIM_PAD_IN = 0.02
 
 #: Margins for an axis-free gallery panel: no ticks, no labels, a thin frame and a corner caption.
 GALLERY_MARGINS: dict[str, float] = {
@@ -275,14 +285,17 @@ def print_preview(
     path: Path,
     *,
     kind: str = "glyph",
-    dpi: int = 600,
+    dpi: int = SAVE_DPI,
     min_marker_pt: float | None = None,
     measure_path: Path | None = None,
+    declared: tuple[float, float] | None = None,
 ) -> PreviewReport:
     """Render or inspect a PNG at final print size and report legibility measurements.
 
     ``kind="glyph"`` checks marker diameter; ``"density"`` omits that check for point
     clouds. ``measure_path`` reuses an existing PNG and requires its actual ``dpi``.
+    ``declared`` is the size the PNG should have, when it was saved trimmed rather than at the
+    figure's own size.
     """
     if kind not in {"glyph", "density"}:
         raise ValueError(f"kind must be 'glyph' or 'density', got {kind!r}.")
@@ -299,7 +312,10 @@ def print_preview(
     with Image.open(png) as image:
         measured = (image.width / dpi, image.height / dpi)
 
-    declared = (float(fig.get_figwidth()), float(fig.get_figheight()))
+    if declared is None:
+        declared = (float(fig.get_figwidth()), float(fig.get_figheight()))
+    else:
+        declared = (float(declared[0]), float(declared[1]))
 
     fonts = [
         t.get_fontsize() for t in fig.findobj(Text) if t.get_text().strip() and t.get_visible()
@@ -358,6 +374,53 @@ def print_preview(
     return report
 
 
+def pin_layout(fig: Figure) -> None:
+    """Keep a figure's layout identical across several saves.
+
+    A figure made with ``layout="none"`` has no layout engine. ``savefig`` lays the figure out,
+    switches the engine off while it writes and then restores the old setting, and restoring "no
+    engine" re-reads ``figure.constrained_layout.use``, which the paper style turns on. The next
+    save of the same figure then rearranges a hand-placed layout (the PDF of the OT-tSNE runtime
+    breakdown came out different from its PNG). An explicit engine that does nothing prevents that.
+    """
+    if fig.get_layout_engine() is None:
+        fig.set_layout_engine(
+            PlaceHolderLayoutEngine(adjust_compatible=True, colorbar_gridspec=True)
+        )
+
+
+def trim_box(fig: Figure, *, dpi: int, pad: float = TRIM_PAD_IN) -> Bbox:
+    """The figure's full width, and its height cut to the drawn content plus ``pad`` inches.
+
+    The content is found by rendering the figure and looking for non-background pixels, so every
+    drawn mark counts, whether or not matplotlib's layout knows about it. The edges are snapped
+    to whole pixels so the PNG has exactly the size the print check expects. The box never grows.
+    """
+    import io
+
+    from PIL import Image
+
+    width, height = (float(v) for v in fig.get_size_inches())
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", dpi=dpi, bbox_inches=None)
+    buffer.seek(0)
+    with Image.open(buffer) as image:
+        pixels = np.asarray(image.convert("RGB"), dtype=np.int16)
+    rows = pixels.shape[0]
+    # Scale pixel rows back to inches by the image's own height, not by dpi: matplotlib truncates
+    # the pixel size, and the box has to stay inside the figure.
+    per_row = height / rows
+    background = np.asarray(mpl.colors.to_rgb(fig.get_facecolor())) * 255
+    ink_rows = np.flatnonzero((np.abs(pixels - background) > 3).any(axis=(1, 2)))
+    if ink_rows.size == 0:
+        return Bbox([[0.0, 0.0], [width, height]])
+    pad_px = int(round(pad * dpi))
+    top_px = max(0, int(ink_rows[0]) - pad_px)
+    bottom_px = min(rows, int(ink_rows[-1]) + 1 + pad_px)
+    # Pixel rows count from the top; a Bbox in inches counts from the bottom.
+    return Bbox([[0.0, (rows - bottom_px) * per_row], [width, (rows - top_px) * per_row]])
+
+
 def save_figure(
     fig: Figure,
     name: str,
@@ -365,19 +428,22 @@ def save_figure(
     appendix: bool = False,
     preview: bool = True,
     kind: str = "glyph",
-    dpi: int = 600,
+    dpi: int = SAVE_DPI,
     close: bool = True,
     subdir: str | None = None,
     min_marker_pt: float | None = None,
     root: Path | None = None,
     formats: tuple[str, ...] = ("png",),
+    trim: bool = True,
 ) -> Path:
-    """Save a figure at its declared size and check the PNG's print legibility.
+    """Save a figure at its declared width and check the PNG's print legibility.
 
     ``root`` overrides the default output directory; ``subdir`` appends a folder.
     The filename is used as supplied, including any desired sequence or appendix prefix.
     ``formats`` may also request vector output; the returned and measured artifact is
-    the PNG. Tight cropping is disabled to preserve physical dimensions.
+    the PNG. With ``trim`` (the default) blank space above and below the content is cut to
+    ``TRIM_PAD_IN``; the width is never cropped, so LaTeX does not rescale the figure. Every
+    format is cut to the same box.
     """
     # Use the supplied filename unchanged; callers own ordering and appendix prefixes.
     stem = name
@@ -391,16 +457,24 @@ def save_figure(
             "print_preview reads pixel dimensions, which a vector file does not have -- and it is "
             "the path this function returns. Ask for ('png', 'pdf') rather than ('pdf',)."
         )
-    fig.savefig(path, dpi=dpi, bbox_inches=None)
+    pin_layout(fig)
+    box = trim_box(fig, dpi=dpi) if trim else None
+    fig.savefig(path, dpi=dpi, bbox_inches=box)
     for suffix in formats:
         if suffix == "png":
             continue
-        fig.savefig(path.with_suffix(f".{suffix}"), dpi=dpi, bbox_inches=None)
+        fig.savefig(path.with_suffix(f".{suffix}"), dpi=dpi, bbox_inches=box)
 
     if preview:
         # Measure the file just written rather than rendering a second copy of it.
         report = print_preview(
-            fig, path, dpi=dpi, kind=kind, min_marker_pt=min_marker_pt, measure_path=path
+            fig,
+            path,
+            dpi=dpi,
+            kind=kind,
+            min_marker_pt=min_marker_pt,
+            measure_path=path,
+            declared=None if box is None else (box.width, box.height),
         )
         print(f"  {report.describe()}")
         report.raise_for_problems()
