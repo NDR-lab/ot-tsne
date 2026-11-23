@@ -8,7 +8,6 @@
 # (`micromamba env export --from-history`) plus the two the R scripts `library()` directly.
 # The remaining ~140 transitive packages are left to the solver on purpose: pinning the full
 # closure would carry osx-arm64 build strings and OpenMP choices that do not exist on linux-64.
-# envs/r/rverify-osx-arm64-full.txt records that closure for drift diagnosis.
 #
 # No build strings and no hashes: every pin below is a version only, so conda-forge supplies
 # the linux-64 build of each.

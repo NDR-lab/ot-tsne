@@ -6,9 +6,7 @@ integration and visualization baselines on seven two-batch single-cell datasets.
 
 ## Benchmark environments
 
-OT-tSNE and most benchmark methods run in the main Python environment managed by `uv`. Four comparison methods require isolated environments because their Python, R or compiled dependencies conflict with the main environment.
-
-Run all commands below from the project root.
+OT-tSNE and most benchmark methods run in the main Python environment managed by `uv`. Four comparison methods require isolated environments because their Python, R or compiled dependencies conflict with the main environment. How each one is called is described in [methods/external](../src/ne_aligned_utils/methods/external/README.md).
 
 ### Requirements
 
@@ -32,7 +30,7 @@ Install the main Python environment first:
 uv sync --locked
 ```
 
-`uv.lock` fixes every package version and hash, and `.python-version` fixes the interpreter (Python 3.11.15). `--locked` fails instead of re-resolving if the lock is out of date. Add `--group dev` for notebooks.
+`uv.lock` fixes every package version and hash, and `.python-version` fixes the interpreter (Python 3.11.15). `--locked` fails instead of re-resolving if the lock is out of date. The default `dev` group adds JupyterLab, pytest and ruff.
 
 Install the isolated method environments:
 
@@ -49,7 +47,7 @@ source .ne-aligned-env.sh
 uv run python scripts/check_environment.py
 ```
 
-Run `source .ne-aligned-env.sh` in each new terminal or batch job before starting the benchmark to check if the installation was successful.
+Run `source .ne-aligned-env.sh` in each new terminal or batch job before starting the benchmark.
 To verify only the main Python environment, without requiring the external methods, run:
 
 ```bash
@@ -60,7 +58,7 @@ uv run python scripts/check_environment.py --allow-missing-external
 
 | methods | environment specification | launcher variable |
 |---|---|---|
-| Seurat, Seurat 3-style anchors, LIGER 1 and BC-tSNE | `envs/r/environment.yml`, `envs/r/install-cran-extras.sh` | `NE_ALIGNED_RSCRIPT` |
+| Seurat and BC-tSNE (also the unbenchmarked Seurat 3-style anchors and LIGER 1) | `envs/r/environment.yml`, `envs/r/install-cran-extras.sh` | `NE_ALIGNED_RSCRIPT` |
 | LIGER 2 | `envs/liger/environment.yml`, `envs/liger/install-cran-extras.sh` | `NE_ALIGNED_LIGER_RSCRIPT` |
 | MultiMAP | `envs/multimap/pyproject.toml`, `uv.lock`, `.python-version` (separate uv project; MultiMAP needs numpy < 2) | `NE_ALIGNED_MULTIMAP_PYTHON` |
 | rc-tSNE | `envs/rctsne/environment.yml`, vendored source and `scripts/setup/build_rctsne.sh` | `NE_ALIGNED_RCTSNE_BIN` |
@@ -112,7 +110,7 @@ Exact dependency resolution for the main Python environment is recorded in `uv.l
 | Scanorama | Scanorama 1.7.4 |
 | scVI | scvi-tools 1.4.2 (Python 3.11, as pinned by `.python-version`; uv.lock resolves 1.4.3 on Python 3.12+) |
 | Seurat | Seurat 5.5.1; SeuratObject 5.4.0; R 4.5.3 |
-| LIGER | rliger 1.0.1 (LIGER 1) and rliger 2.2.1 (LIGER 2) |
+| LIGER | rliger 2.2.1 (LIGER 2); RcppPlanc 2.0.16 |
 | MultiMAP | upstream MultiMAP pinned to commit `681e608c45cdb6b139dfb6700e40c7520bc6096d` |
 | rc-tSNE | revised conditional t-SNE implementation vendored from commit `afda44b6d04066077d6fe46da1127de28de6a034`; FFTW 3.3.11 |
 | BC-tSNE | bcTSNE 0.11.1, pinned to upstream commit `82e8be9ff42f03ace8f7112d36d4a3818485aace` |
@@ -124,9 +122,29 @@ Preprocessing uses **Scanpy 1.11.5** on the pinned Python 3.11 (`uv.lock` resolv
 
 ## Obtain the data
 
-The checkout includes only the nCoV example inputs under
-`data/nCoV/preprocessed/`. The required raw file names for each dataset are declared
-in [configs/benchmark.toml](../configs/benchmark.toml).
+The benchmark prepares every dataset from its raw files. The raw file names for each dataset
+(`source_files`) are declared in [configs/benchmark.toml](../configs/benchmark.toml).
+`data/nCoV/preprocessed/` holds small nCoV example inputs for the examples, not the benchmark.
+
+| Dataset (paper name) | Data from | Downloaded from |
+|---|---|---|
+| `human_brain` (Human brain) | Ament et al. (2024), replicates 1 and 4 | [Zenodo record 17167270](https://zenodo.org/records/17167270) |
+| `nCoV` (nCov) | Zhu et al. (2020), patient 5, days 1 and 13 | CNGB Nucleotide Sequence Archive, accession CNP0001102 |
+| `lupus` (Lupus) | Kang et al. (2018) | GEO series GSE96583, assembled by the script below |
+| `yao_10x_ent_l2l3` (Mouse cortex) | Yao et al. (2021), entorhinal L2/3 IT neurons | |
+| `PBMC` (PBMC) | Zheng et al. (2017) | Tran et al. (2020) benchmark, [Docker image](https://hub.docker.com/r/jinmiaochenlab/batch-effect-removal-benchmarking) |
+| `mouse_atlas` (Mouse atlas) | Han et al. (2018); Tabula Muris Consortium (2018) | as PBMC |
+| `hematopoietic` (Hematopoietic) | Paul et al. (2015); Nestorowa et al. (2016) | as PBMC |
+
+Put each dataset's raw files under `data/<dataset>/raw/`, with the names in the manifest. The
+paper's appendix describes each dataset.
+
+The lupus dataset needs one extra step. Its raw counts are assembled from GEO series GSE96583
+into `data/lupus/raw/raw_counts.h5ad`:
+
+```bash
+uv run python scripts/prepare/prepare_lupus_raw_counts.py
+```
 
 For benchmark preprocessing, place raw files in the layout below. The preparation script
 creates `data/benchmark/<dataset>/` when run.
@@ -154,23 +172,14 @@ export NE_ALIGNED_DATA_ROOT=/path/to/release-data/benchmark
 
 ## Prepare a dataset
 
-Check that the expected raw files are present:
+Check that the expected raw files are present, then prepare the dataset:
 
 ```bash
-uv run python scripts/prepare_data.py PBMC --check-only
+uv run python scripts/prepare_data.py nCoV --check-only
+uv run python scripts/prepare_data.py nCoV
 ```
 
-Prepare the dataset:
-
-```bash
-uv run python scripts/prepare_data.py PBMC
-```
-
-Prepared files are written to:
-
-```text
-data/benchmark/PBMC/
-```
+Prepared files are written to `data/benchmark/nCoV/`. Repeat for every dataset in the manifest.
 
 Every dataset follows the same preprocessing pipeline:
 
@@ -195,6 +204,8 @@ X1_pca50.npy
 X2_pca50.npy
 labels1.npy
 labels2.npy
+cell_type_names.npy
+dataset_names.npy
 cell_ids1.npy
 cell_ids2.npy
 cells_metadata.csv
@@ -209,7 +220,7 @@ preprocessing_manifest.json
 
 ## Smoke test
 
-Run a small end-to-end benchmark on nCoV:
+After preparing nCoV, run a small end-to-end benchmark on it:
 
 ```bash
 uv run python scripts/run_benchmark.py reproduce \
@@ -255,6 +266,35 @@ uv run python scripts/run_benchmark.py reproduce --dataset nCoV
 
 5. validates the outputs.
 
+`--experiment`, `--method` and `--device` limit a run further.
+
+### Cluster run
+
+`scripts/submit_benchmark.sh` submits the same commands as Slurm jobs: one per dataset and
+experiment (one per method for Yao), plus a final scoring job that waits for the others.
+Site-specific settings (account, partition) go in the standard `SBATCH_*` environment
+variables; the script stores none.
+
+```bash
+bash scripts/submit_benchmark.sh                      # the main benchmark, CPU
+bash scripts/submit_benchmark.sh --device cuda        # OT-plan methods on the GPU (timings)
+bash scripts/submit_benchmark.sh --dataset nCoV --method ot
+```
+
+### Other manifests
+
+`--manifest` (for `run_benchmark.py` and `submit_benchmark.sh`) selects another configuration.
+Each has its own configuration hash and therefore its own result tree.
+
+| Manifest | What it runs |
+|---|---|
+| `configs/benchmark.toml` | the main benchmark (default) |
+| `configs/ot_init_{random,pca,spectral,eot}.toml` | OT-tSNE variants with each initialisation; `eot` matches the main benchmark |
+| `configs/ot_sensitivity.toml` | OT-tSNE over rel_reg 0.1, 0.5, 1, 5, 10 and k 5, 10, 15, 30, 60 |
+
+`--rel-reg` and `--effective-k` run one line or point of the sensitivity grid. Each grid point
+gets its own `aggregate--rel_reg_<r>__k_<k>.npz` and metrics file.
+
 ### Results
 
 Results are written under:
@@ -291,6 +331,11 @@ benchmark--<config-hash>/
             └── metrics.csv
 ```
 
+A run limited with `--dataset`, `--experiment`, `--device`, `--rel-reg` or `--effective-k`
+writes `metrics/<selection>.csv` and `task_metadata/<selection>.csv` instead of the top-level
+tables, for example `metrics/nCoV--all-experiments--all-devices.csv`. It never replaces the full
+tables.
+
 The main files are:
 
 - `task_metadata.csv` — one readable row per task, including method, seeds, parameters, hashes, and scientific identifiers;
@@ -305,7 +350,9 @@ The main files are:
 
 ## Build figures from completed results
 
-The figure entry point reads completed results; it never runs a benchmark method.
+The figure entry point reads completed results; it never runs a benchmark method. The full
+reference (every family, option and output, plus the sensitivity and initialisation figures) is
+in [the figure guide](../src/ne_aligned_utils/paper/README.md).
 
 ```bash
 uv run python scripts/make_figures.py \
@@ -334,5 +381,12 @@ The output directory must be new or empty (default `<results-root>/paper_figures
 
 [method_figure.ipynb](../notebooks/method_figure.ipynb) recomputes the small methods
 schematic example. [reproduce_paper_figures.ipynb](../notebooks/reproduce_paper_figures.ipynb)
-builds embedding and ranking figures from separately supplied handoff data; its
-configuration cell sets the data and output paths.
+builds embedding and ranking figures without importing this package. Export its inputs from a
+completed results root first:
+
+```bash
+PYTHONPATH=src uv run python scripts/export_handoff_data.py <results root>   # writes handoff/data
+```
+
+The notebook reads `handoff/data` (or `NE_ALIGNED_HANDOFF_DATA`) and writes to `handoff/figures`
+(or `NE_ALIGNED_FIGURE_DIR`).

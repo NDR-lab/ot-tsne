@@ -5,6 +5,8 @@ from sklearn.neighbors import NearestNeighbors
 
 from ne_aligned_utils.config import (
     DEFAULT_BACKEND,
+    DEFAULT_OT_SVD_DIRECTIONS,
+    DEFAULT_OT_SVD_SOLVER,
     DEFAULT_TSNE_EARLY_EXAGGERATION_ITER,
     DEFAULT_TSNE_N_ITER,
 )
@@ -22,6 +24,7 @@ from ne_aligned_utils.methods.ot_affinity import (
     SuppliedDiagonals,
     WithinBatchKnn,
     graph_from_pairs,
+    resolve_plan_svd,
     select_four_block,
 )
 from ne_aligned_utils.methods.ot_graph import (
@@ -32,6 +35,7 @@ from ne_aligned_utils.methods.ot_graph import (
     _validate_symmetrization,
     _validate_symmetrizations_for_backend,
     _wants_eot_basis,
+    leading_plan_modes,
     normalize_ot_tsne_graph,
     resolve_effective_k_split,
     resolve_mass_budgets,
@@ -55,22 +59,44 @@ def _block_graph(
     mass_budgets: tuple[np.ndarray, np.ndarray] | None = None,
     binarize: bool = True,
     directed_knn: bool = False,
+    spectrum: PlanSpectrum | None = None,
+    svd_solver: str = DEFAULT_OT_SVD_SOLVER,
+    svd_directions: int | None = DEFAULT_OT_SVD_DIRECTIONS,
 ):
     """Build a normalized sparse graph from a plan and a within-batch source.
 
-    Return ``(graph, selection, singular_values, resolved_init)``. Compute the SVD
-    only for plan-derived diagonals or EOT initialization; otherwise singular values
-    are ``None``. ``resolved_init`` replaces ``"eot"`` with its coordinates.
+    Return ``(graph, selection, singular_values, resolved_init)``. Plan-derived diagonals
+    need the full SVD. EOT initialization alone needs only the leading modes, so then only
+    those singular values are returned; with neither, singular values are ``None``.
+    ``resolved_init`` replaces ``"eot"`` with its coordinates.
+    ``spectrum`` is a precomputed ``PlanSpectrum.from_plan(plan)``; when given, it is used
+    instead of computing the SVD again; otherwise ``svd_solver`` and ``svd_directions``
+    choose how plan diagonals compute it (``PlanSpectrum.from_plan``).
     """
     plan = np.asarray(plan, dtype=float)
     if plan.ndim != 2:
         raise ValueError(f"plan must be a 2D array, got shape {plan.shape!r}.")
     n0, n1 = plan.shape
-    needs_spectrum = isinstance(within_batch, PlanDiagonals) or _wants_eot_basis(init)
-    spectrum = PlanSpectrum.from_plan(plan) if needs_spectrum else None
-    resolved_init = _resolve_plan_init(
-        init, plan, spectrum.eot_coordinates() if _wants_eot_basis(init) else None
-    )
+    wants_eot = _wants_eot_basis(init)
+    eot_coordinates = None
+    if isinstance(within_batch, PlanDiagonals) or (wants_eot and spectrum is not None):
+        if spectrum is None:
+            spectrum = PlanSpectrum.from_plan(
+                plan, solver=svd_solver, n_directions=svd_directions
+            )
+        elif (spectrum.n0, spectrum.n1) != (n0, n1):
+            raise ValueError(
+                f"spectrum is for a {(spectrum.n0, spectrum.n1)} plan, but the plan is {(n0, n1)}."
+            )
+        singular_values = spectrum.singular_values
+        if wants_eot:
+            eot_coordinates = spectrum.eot_coordinates()
+    else:
+        spectrum = None
+        singular_values = None
+        if wants_eot:
+            singular_values, eot_coordinates = leading_plan_modes(plan)
+    resolved_init = _resolve_plan_init(init, plan, eot_coordinates)
     selection = select_four_block(
         BlockScores.from_plan(plan, within_batch, spectrum),
         effective_k=effective_k,
@@ -82,7 +108,6 @@ def _block_graph(
         directed_knn=directed_knn,
     )
     graph = graph_from_pairs(selection.rows, selection.cols, n0 + n1)
-    singular_values = None if spectrum is None else spectrum.singular_values
     return graph, selection, singular_values, resolved_init
 
 
@@ -109,6 +134,9 @@ def compute_ot_tsne_embedding_from_plan(
     graph_symmetrization: str = DEFAULT_GRAPH_SYMMETRIZATION,
     return_artifacts: bool = False,
     timer: object | None = None,
+    spectrum: PlanSpectrum | None = None,
+    svd_solver: str = DEFAULT_OT_SVD_SOLVER,
+    svd_directions: int | None = DEFAULT_OT_SVD_DIRECTIONS,
 ) -> np.ndarray | tuple[np.ndarray, dict[str, object]]:
     """Embed a transport plan after four-block affinity selection and normalization.
 
@@ -116,11 +144,20 @@ def compute_ot_tsne_embedding_from_plan(
     selection. Optional mass budgets vary cross-batch quotas. Mutual (``"and"``)
     symmetrization is supported only for fixed-budget t-SNE graphs.
     With ``return_artifacts=True``, also return graph and initialization diagnostics.
+    ``spectrum`` is an optional precomputed SVD of ``plan`` for the ``effective_k`` path.
+    Without it, ``svd_solver`` and ``svd_directions`` choose the SVD behind the spectral
+    within-batch blocks (default: randomized, 500 directions). The dense ``percentage``
+    path always uses the full SVD.
     """
     plan = np.asarray(plan, dtype=float)
     if plan.ndim != 2:
         raise ValueError(f"plan must be a 2D array, got shape {plan.shape!r}.")
     n0, n1 = plan.shape
+    used_svd_solver = "full"
+    if percentage is None:
+        used_svd_solver = resolve_plan_svd(svd_solver, svd_directions, n0, n1)[0]
+    if spectrum is not None and percentage is not None:
+        raise ValueError("a precomputed spectrum is only used with effective_k, not percentage.")
     if mass_budgets is not None and backend != DEFAULT_BACKEND:
         # UMAP requires a fixed-width neighbor list; mass budgets give variable widths.
         raise ValueError(
@@ -176,6 +213,9 @@ def compute_ot_tsne_embedding_from_plan(
                 mass_budgets=mass_budgets,
                 binarize=binarize,
                 directed_knn=backend == "umap",
+                spectrum=spectrum,
+                svd_solver=svd_solver,
+                svd_directions=svd_directions,
             )
             split = selection.split
             knn_indices = selection.knn_indices
@@ -197,6 +237,7 @@ def compute_ot_tsne_embedding_from_plan(
             init_scale=init_scale,
             init=resolved_init,
             init_info=init_info,
+            init_label=init,
             timer=timer,
         )
     if not return_artifacts:
@@ -206,6 +247,9 @@ def compute_ot_tsne_embedding_from_plan(
         **backend_artifacts,
         "graph": graph,
         **_spectrum_artifacts(singular_values),
+        # The SVD behind the spectral blocks: solver used and directions kept.
+        "svd_solver": used_svd_solver,
+        "svd_directions": int(np.asarray(singular_values).size),
         "percentage": None if percentage is None else float(percentage),
         "graph_symmetrization": str(graph_symmetrization),
         **init_info,
@@ -243,20 +287,51 @@ def compute_ot_tsne_embedding_from_arrays(
     graph_symmetrization: str = DEFAULT_GRAPH_SYMMETRIZATION,
     return_artifacts: bool = False,
     timer: object | None = None,
+    ot_cache_dir: str | None = None,
+    threads: int | None = None,
+    svd_solver: str = DEFAULT_OT_SVD_SOLVER,
+    svd_directions: int | None = DEFAULT_OT_SVD_DIRECTIONS,
 ) -> np.ndarray | tuple[np.ndarray, dict[str, object]]:
-    """Compute a balanced entropic transport plan and embed its four-block affinities."""
+    """Compute a balanced entropic transport plan and embed its four-block affinities.
+
+    With ``ot_cache_dir``, the plan and its SVD are read from, or written to, a disk cache shared
+    by runs that differ only in k or seed (see ``ot_cache``). ``threads`` is part of the cache
+    key. The artifact ``ot_cache_hit`` says whether this run read them; such a run did not pay
+    for them, so its total runtime must not be reported.
+    """
     x0, x1 = _validate_pair_arrays(x0, x1)
-    with _stage(timer, "time_pre_embedding"):
-        plan, ot_artifacts = compute_ot_plan(
+    spectrum = None
+    cache_hit = None
+    if ot_cache_dir is not None:
+        if percentage is not None:
+            raise ValueError("ot_cache_dir is only supported with effective_k, not percentage.")
+        from ne_aligned_utils.methods.ot_cache import cached_plan_and_spectrum
+
+        plan, ot_artifacts, spectrum, cache_hit = cached_plan_and_spectrum(
             x0,
             x1,
+            cache_dir=ot_cache_dir,
             rel_reg=rel_reg,
             tol=tol,
             max_iter=max_iter,
             device=device,
-            return_artifacts=True,
+            threads=threads,
             timer=timer,
+            svd_solver=svd_solver,
+            svd_directions=svd_directions,
         )
+    else:
+        with _stage(timer, "time_pre_embedding"):
+            plan, ot_artifacts = compute_ot_plan(
+                x0,
+                x1,
+                rel_reg=rel_reg,
+                tol=tol,
+                max_iter=max_iter,
+                device=device,
+                return_artifacts=True,
+                timer=timer,
+            )
     embedding, method_artifacts = compute_ot_tsne_embedding_from_plan(
         plan,
         effective_k=effective_k,
@@ -274,6 +349,9 @@ def compute_ot_tsne_embedding_from_arrays(
         graph_symmetrization=graph_symmetrization,
         return_artifacts=True,
         timer=timer,
+        spectrum=spectrum,
+        svd_solver=svd_solver,
+        svd_directions=svd_directions,
     )
 
     if not return_artifacts:
@@ -288,6 +366,11 @@ def compute_ot_tsne_embedding_from_arrays(
         "ot_device": ot_artifacts["ot_device"],
         "torch_device": ot_artifacts["ot_device"],
     }
+    for name in ("sinkhorn_niter", "sinkhorn_final_error", "sinkhorn_converged"):
+        if name in ot_artifacts:
+            artifacts[name] = ot_artifacts[name]
+    if cache_hit is not None:
+        artifacts["ot_cache_hit"] = bool(cache_hit)
     return embedding, artifacts
 
 def _compute_uot_tsne_embedding_from_arrays(
@@ -554,6 +637,7 @@ def compute_ot_tsne_knndiag_embedding_from_plan(
             init_scale=init_scale,
             init=resolved_init,
             init_info=init_info,
+            init_label=init,
             timer=timer,
         )
     if not return_artifacts:
@@ -709,6 +793,7 @@ def compute_ot_tsne_diagonal_embedding_from_plan(
             init_scale=init_scale,
             init=resolved_init,
             init_info=init_info,
+            init_label=init,
             timer=timer,
         )
     if not return_artifacts:
@@ -958,6 +1043,7 @@ def compute_ot_tsne_zerodiag_embedding_from_plan(
             init_scale=init_scale,
             init=resolved_init,
             init_info=init_info,
+            init_label=init,
             cross_batch_only=True,
             timer=timer,
         )
@@ -1043,6 +1129,7 @@ def compute_ot_tsne_zerodiag_split_embedding_from_plan(
             init_scale=init_scale,
             init=resolved_init,
             init_info=init_info,
+            init_label=init,
             timer=timer,
         )
     if not return_artifacts:

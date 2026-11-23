@@ -13,7 +13,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=root / "data/nCoV/preprocessed")
-    parser.add_argument("--output", type=Path, default=root / "figures/ncov_embedding.png")
+    parser.add_argument("--output", type=Path, default=root / "results/examples/ncov_embedding.png")
     args = parser.parse_args()
 
     # These scores come from one PCA fitted jointly to both samples.
@@ -24,6 +24,7 @@ def main():
         x1,
         rel_reg=1.0,
         effective_k=15,
+        init="eot",
         random_state=0,
         n_jobs=4,
     )

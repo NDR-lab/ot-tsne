@@ -19,7 +19,10 @@ from ne_aligned_utils.evaluation.rank_aggregation import (
     METRIC_FAMILY,
     RANK_METRICS,
     _expand_non_rel_reg_methods,
+    check_one_configuration,
+    check_seed_groups,
     resolve_method_pool,
+    seed_group_keys,
 )
 
 # Vocabulary
@@ -36,6 +39,10 @@ REPORTED_REL_REG: tuple[float, ...] = (1.0, 1 / 10)
 #: Suffix for a metric's normalized column. Spelled out rather than appended to ``_score`` so a
 #: normalized column can never be mistaken for the raw metric it came from.
 NORM_SUFFIX = "__norm"
+
+#: The matched-k MultiMAP arm. Rows carry it under this key only when the caller has already told
+#: the two MultiMAP arms apart; it is never ranked, since the ranks compare native MultiMAP.
+MATCHED_K_MULTIMAP = "multimap-k15"
 
 #: Map shared metric families to this module's bio/mixing column names.
 #: Figure-facing frames retain the shared batch spelling.
@@ -110,21 +117,35 @@ def score_within(
     metrics: Sequence[str] = RANK_METRICS,
     methods: Sequence[str] | None = None,
     datasets: Sequence[str] | None = None,
-    rel_reg_values: Sequence[float] = REPORTED_REL_REG,
-    effective_k: float | None = 15.0,
+    rel_reg_values: Sequence[float],
+    effective_k: float | None,
     normalization: str = "minmax",
     bio_weight: float = 0.5,
 ) -> pd.DataFrame:
     """Average seeds, normalize metrics, and rank bio, mixing, and overall scores per dataset.
 
+    ``rel_reg_values`` and ``effective_k`` choose the configuration that competes; there are no
+    defaults, so nothing is filtered unseen. ``effective_k=None`` keeps every k, and a method that
+    then has two k values in one cell is an error rather than an average. Seeds are averaged per
+    run (dataset, method and every setting column, the device included).
+
     Return metric means and normalized values with composite scores, ranks, and pool
-    metadata. Exact ties average occupied ranks. ``bio_weight`` controls the overall
+    metadata, with each run's setting columns. Exact ties average occupied ranks. ``bio_weight`` controls the overall
     composite; mixing receives the remainder (equal weight by default).
     """
     _check_normalization(normalization)
     if not 0.0 <= float(bio_weight) <= 1.0:
         raise ValueError(f"bio_weight must lie in [0, 1], got {bio_weight!r}")
 
+    if "method_key" in rows.columns:
+        raise ValueError(
+            "rows carry both 'method' and 'method_key'; pass method_key as 'method' (and drop the "
+            "raw name), so the two MultiMAP arms cannot be confused."
+        )
+    if (rows["method"].astype(str) == MATCHED_K_MULTIMAP).any():
+        raise ValueError(
+            f"{MATCHED_K_MULTIMAP!r} is the matched-k MultiMAP arm; ranks use native MultiMAP only."
+        )
     frame = rows.copy()
     if datasets is not None:
         frame = frame[frame["dataset"].isin(list(datasets))]
@@ -144,8 +165,9 @@ def score_within(
     # step 1: mean over seeds. No spread is carried: unlike the rank-first pipeline this one has
     # no tie tolerance to derive from it, and a spread in a metric's units cannot be compared
     # against a composite of normalized metrics anyway.
-    keys = ["dataset", "method", "rel_reg"]
-    grouped = frame.groupby(keys, dropna=False)[list(metrics)].mean().reset_index()
+    run_keys = seed_group_keys(frame)
+    check_seed_groups(frame, run_keys)
+    grouped = frame.groupby(run_keys, dropna=False)[list(metrics)].mean().reset_index()
 
     # A method with no rel_reg knob holds one score valid in every regularization's table, so it
     # is broadcast across the grid exactly as the rank-first pipeline broadcasts it. Its own value
@@ -153,6 +175,7 @@ def score_within(
     grouped = _expand_non_rel_reg_methods(grouped, rel_reg_values)
     wanted = [float(e) for e in rel_reg_values]
     grouped = grouped[grouped["rel_reg"].isin(wanted)]
+    check_one_configuration(grouped)
     if grouped.empty:
         raise ValueError(
             f"no rows at rel_reg {wanted}; the frame holds "
@@ -347,6 +370,7 @@ def comparison_table(
 
 __all__ = [
     "FAMILY_TO_SCORE",
+    "MATCHED_K_MULTIMAP",
     "NORMALIZATIONS",
     "NORM_SUFFIX",
     "REPORTED_REL_REG",

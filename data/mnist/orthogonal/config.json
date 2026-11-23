@@ -1,0 +1,78 @@
+{
+  "config": {
+    "competitors": {
+      "cross_batch_k": 15,
+      "multimap_profile": "default",
+      "run_multimap": true,
+      "run_scanorama_50_tsne": true
+    },
+    "corruption": {
+      "batch0_scale_seed_offset": 20000,
+      "batch1_scale_seed_offset": 30000,
+      "batch1_seed_offset": 10000,
+      "class_corruption_scales": [
+        0.35,
+        0.6,
+        0.85,
+        1.1,
+        1.35,
+        1.6,
+        1.85,
+        2.1,
+        2.35,
+        2.6
+      ],
+      "corruption_seeds": [
+        0,
+        1,
+        2
+      ],
+      "magnitudes": [
+        1.0,
+        4.0,
+        10.0,
+        20.0
+      ]
+    },
+    "data": {
+      "modes": [
+        "original",
+        "projected"
+      ],
+      "n_per_digit": 100,
+      "random_seed": 0,
+      "signal_rank": null,
+      "signal_variance_target": 0.9,
+      "tail_pca_indices": null,
+      "tail_pool_size": 30,
+      "tail_variance_rel_tol": 1e-10
+    },
+    "embedding": {
+      "embedding_seeds": [
+        0,
+        1,
+        2
+      ],
+      "n_epochs": 200
+    },
+    "evaluation": {
+      "kbet_k": 15
+    },
+    "ot": {
+      "epsilon_policies": [
+        "fixed_at_lambda_0",
+        "adaptive_per_magnitude"
+      ],
+      "ot_effective_k": 15,
+      "ot_max_iter": 10000,
+      "ot_tol": 1e-12,
+      "rel_reg": [
+        1.0,
+        10.0
+      ]
+    }
+  },
+  "construction_sha256": "7a25d60e9c887fbe6f0cbe5f8f8c52c85024f678d7fe30f2f22c78421f7b79c3",
+  "schema_version": 1,
+  "variant": "two_sided_independent_scales"
+}

@@ -1,0 +1,100 @@
+{
+  "arrays": {
+    "affinity": {
+      "dtype": "float64",
+      "sha256": "4a7aa348cb7d185095597b6d87c00e7e8ce6fa6d35fb5ac71814a15ac17d56af",
+      "shape": [
+        270,
+        270
+      ]
+    },
+    "embedding": {
+      "dtype": "float64",
+      "sha256": "b2ea1a46659f6587e5a15671222681ff9383850b13dcd41f4f5b3d0fbfc67c66",
+      "shape": [
+        270,
+        2
+      ]
+    },
+    "plan": {
+      "dtype": "float64",
+      "sha256": "6587c34fa6aa4e67922b36b9411849ed5e8471046e8cff261fbe259f548dad65",
+      "shape": [
+        180,
+        90
+      ]
+    },
+    "sparse": {
+      "dtype": "float64",
+      "sha256": "4c700c0ddc00c255bcdba5f0a4a40b79ebcf62ff135d1b1b2450974cfdc21313",
+      "shape": [
+        270,
+        270
+      ]
+    },
+    "x0": {
+      "dtype": "float64",
+      "sha256": "3d63bf8956eeb209880baedb564e0370a3cbe029503bbb69f5bf1350261fd968",
+      "shape": [
+        180,
+        3
+      ]
+    },
+    "x1": {
+      "dtype": "float64",
+      "sha256": "3e4c3df248880b1471d9c6e5f95a95ab3606aab0da6371889444683ba22e8483",
+      "shape": [
+        90,
+        3
+      ]
+    }
+  },
+  "environment": {
+    "font_family": "Helvetica",
+    "matplotlib": "3.10.8",
+    "numpy": "2.4.4",
+    "pandas": "2.3.3",
+    "pillow": "12.2.0",
+    "python": "3.14.6",
+    "scipy": "1.17.1"
+  },
+  "local_reference_root": "results/ref-baselines/methods-v1",
+  "notebook_sha256": "cb74b2d690998fd22a49f6152904321f6abd3db77bf8c1da85466772ba4aaa37",
+  "outputs": {
+    "method-arrays.npz": {
+      "bytes": 661384,
+      "sha256": "5cf6480f5fcc9de59f401e7a789f8f4db938a3e5fd43d99e6abeb6be63d96822"
+    },
+    "method.pdf": {
+      "bytes": 397658,
+      "sha256": "059222f0c02e5f675f1c28bd1eb92eb8ae08516b554a34b8b4c045e342ab1324"
+    },
+    "method.png": {
+      "bytes": 771988,
+      "dimensions_px": [
+        4594,
+        801
+      ],
+      "dpi": [
+        299.9994,
+        299.9994
+      ],
+      "sha256": "d6fa284f6fd426d80792b795286f872bf4a9a1871a3038dc4db48529ee05bdd1"
+    }
+  },
+  "recipe": {
+    "backend": "Agg",
+    "effective_k": 15,
+    "init": "random",
+    "n0": 180,
+    "n1": 90,
+    "n_epochs": 200,
+    "rel_reg": 1,
+    "seed": 0,
+    "source_date_epoch": "0"
+  },
+  "schema_version": 1,
+  "numerical_cell_sha256": "7054c72a78343dd9c71922424495bfd812f544be06c5db8ca3f5ad3258c21761",
+  "source_commit": "20c2ef2924f13f851d134d421862ab9e693017d4",
+  "scope": "Existing seeded notebook toy example, executed once with user approval; no benchmark inputs or methods changed."
+}

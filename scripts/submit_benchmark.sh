@@ -5,6 +5,9 @@ set -euo pipefail
 # standard SBATCH_* variables; this portable script intentionally stores none.
 #
 # Usage: bash scripts/submit_benchmark.sh [--device cpu|cuda] [--dataset NAME] [--method NAME]
+#        [--manifest PATH] [--rel-reg VALUE] [--effective-k K]
+# --manifest picks another benchmark manifest (default configs/benchmark.toml), for example
+# configs/ot_sensitivity.toml. --rel-reg and --effective-k run one line or point of its grid.
 # Jobs come from configs/benchmark.toml: one per enabled dataset and experiment, and one per
 # method for Yao. --device cuda submits the methods that solve an OT plan (OT-tSNE variants and
 # EOT) on the GPU (see pipeline.method_devices); without it, every experiment runs on its
@@ -22,7 +25,11 @@ fi
 device=""
 dataset_filter=""
 method_filter=""
-usage="usage: $0 [--device cpu|cuda] [--dataset NAME] [--method NAME]"
+manifest="configs/benchmark.toml"
+manifest_args=""
+rel_reg_filter=""
+effective_k_filter=""
+usage="usage: $0 [--device cpu|cuda] [--dataset NAME] [--method NAME] [--manifest PATH] [--rel-reg VALUE] [--effective-k K]"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --device)
@@ -40,6 +47,23 @@ while [[ $# -gt 0 ]]; do
       method_filter=$2
       shift 2
       ;;
+    --manifest)
+      [[ $# -ge 2 && -f "$2" ]] || { echo "${usage}" >&2; exit 2; }
+      manifest=$2
+      # Passed on only when given, so default commands are unchanged.
+      manifest_args=" --manifest ${manifest}"
+      shift 2
+      ;;
+    --rel-reg)
+      [[ $# -ge 2 && -n "$2" ]] || { echo "${usage}" >&2; exit 2; }
+      rel_reg_filter=$2
+      shift 2
+      ;;
+    --effective-k)
+      [[ $# -ge 2 && -n "$2" ]] || { echo "${usage}" >&2; exit 2; }
+      effective_k_filter=$2
+      shift 2
+      ;;
     *)
       echo "${usage}" >&2
       exit 2
@@ -49,10 +73,13 @@ done
 device_args=${device:+ --device ${device}}
 dataset_args=${dataset_filter:+ --dataset ${dataset_filter}}
 method_args=${method_filter:+ --method ${method_filter}}
+grid_args="${rel_reg_filter:+ --rel-reg ${rel_reg_filter}}${effective_k_filter:+ --effective-k ${effective_k_filter}}"
+manifest_name=$(basename "${manifest}" .toml)
 
 # Build and validate the whole job list before submitting anything.
 jobs=$(
-  DEVICE="${device}" DATASET="${dataset_filter}" METHOD="${method_filter}" uv run python - <<'PY'
+  MANIFEST="${manifest}" DEVICE="${device}" DATASET="${dataset_filter}" METHOD="${method_filter}" \
+    uv run python - <<'PY'
 import os
 import tomllib
 from pathlib import Path
@@ -62,12 +89,13 @@ from ne_aligned_utils.benchmark.pipeline import method_devices
 # Yao is large enough to run one job per method; the arms write to disjoint directories.
 PER_METHOD_DATASETS = {"yao_10x_ent_l2l3"}
 
-with Path("configs/benchmark.toml").open("rb") as handle:
+manifest_path = os.environ["MANIFEST"]
+with Path(manifest_path).open("rb") as handle:
     manifest = tomllib.load(handle)
 device = os.environ.get("DEVICE") or None
 only = os.environ.get("DATASET") or None
 if only is not None and not manifest["datasets"].get(only, {}).get("enabled", False):
-    raise ValueError(f"--dataset {only!r} is not an enabled dataset in configs/benchmark.toml")
+    raise ValueError(f"--dataset {only!r} is not an enabled dataset in {manifest_path}")
 method_only = os.environ.get("METHOD") or None
 jobs = []
 for experiment in manifest["experiments"]:
@@ -91,7 +119,7 @@ for experiment in manifest["experiments"]:
         else:
             jobs.append((dataset, experiment["name"], ""))
 if not jobs:
-    raise ValueError("configs/benchmark.toml defines no jobs for this device")
+    raise ValueError(f"{manifest_path} defines no jobs for this device")
 for dataset, experiment, method in jobs:
     print(f"{dataset}\t{experiment}\t{method}")
 PY
@@ -99,8 +127,8 @@ PY
 
 run_job_ids=()
 while IFS=$'\t' read -r dataset experiment method; do
-  name="benchmark-${dataset}-${experiment}${method:+-${method}}${device:+-${device}}"
-  command="uv run python scripts/run_benchmark.py run-aggregate --dataset ${dataset} --experiment ${experiment}${method:+ --method ${method}}${device_args}"
+  name="${manifest_name}-${dataset}-${experiment}${method:+-${method}}${device:+-${device}}"
+  command="uv run python scripts/run_benchmark.py run-aggregate${manifest_args} --dataset ${dataset} --experiment ${experiment}${method:+ --method ${method}}${device_args}${grid_args}"
   job_id=$(sbatch --parsable --chdir="${repo_dir}" --job-name="${name}" --wrap="${command}")
   run_job_ids+=("${job_id%%;*}")
 done <<< "${jobs}"
@@ -108,6 +136,6 @@ done <<< "${jobs}"
 dependency=$(IFS=:; echo "${run_job_ids[*]}")
 sbatch \
   --chdir="${repo_dir}" \
-  --job-name="benchmark-score${dataset_filter:+-${dataset_filter}}${method_filter:+-${method_filter}}${device:+-${device}}" \
+  --job-name="${manifest_name}-score${dataset_filter:+-${dataset_filter}}${method_filter:+-${method_filter}}${device:+-${device}}" \
   --dependency="afterok:${dependency}" \
-  --wrap="uv run python scripts/run_benchmark.py finalize${dataset_args}${method_args}${device_args}"
+  --wrap="uv run python scripts/run_benchmark.py finalize${manifest_args}${dataset_args}${method_args}${device_args}${grid_args}"

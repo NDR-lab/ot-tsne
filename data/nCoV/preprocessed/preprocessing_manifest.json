@@ -35,9 +35,10 @@
   },
   "preprocessing_hash": "2ead46705ca87dde9ab979519240661df73746d644afd5ed04019d5478d0ab76",
   "provenance": {
-    "output_directory": "/Users/azharakhmetova/ne-aligned/data/benchmark_v2/nCoV",
-    "source_paths": [
-      "/Users/azharakhmetova/ne-aligned/data/nCoV/raw/Final_nCoV_0716_upload.h5ad"
+    "output_directory": "nCoV",
+    "path_policy": "portable logical names; local absolute paths are not recorded",
+    "source_files": [
+      "Final_nCoV_0716_upload.h5ad"
     ]
   }
 }

@@ -56,6 +56,25 @@ class GalleryBlock:
     labels: np.ndarray
 
 
+@dataclass(frozen=True)
+class SeedGallery:
+    """One dataset's preloaded coordinates for every seed, for the seed galleries."""
+
+    name: str
+    #: seed -> method -> coordinates.
+    embeddings: Mapping[int, Mapping[str, np.ndarray]]
+    #: method -> the aggregate cache (batch and cell-type labels), shared by its seeds.
+    caches: Mapping[str, Mapping]
+    palette: np.ndarray
+
+    def cached(self) -> dict[int, dict[str, tuple[np.ndarray, Mapping]]]:
+        """The ``seed -> {method: (coordinates, cache)}`` input of ``seed_panels``."""
+        return {
+            seed: {key: (emb, self.caches[key]) for key, emb in by_key.items()}
+            for seed, by_key in self.embeddings.items()
+        }
+
+
 #: Stacked-gallery geometry, inches.
 STACK_TEXT_PT = 8.0
 STACK_MARGIN_IN = 0.05
@@ -68,6 +87,15 @@ STACK_BLOCK_GAP_IN = 0.10
 STACK_BRACE_NAME_IN = 0.10
 STACK_LEGEND_GAP_IN = 0.03
 STACK_LEGEND_IN = 0.11
+
+#: Seed galleries: extra left margin for the seed labels, and their offset (axes fraction).
+SEED_LABEL_IN = 0.15
+SEED_LABEL_PAD = 0.06
+
+
+def _row_gap_fraction(margins: Mapping[str, float], panel: float) -> float:
+    """The row gap as a fraction of a panel's height."""
+    return float(margins.get("hgap", layout.GAP)) / panel
 
 
 @dataclass(frozen=True)
@@ -90,6 +118,29 @@ class QualitativeComposer:
         groups: tuple[tuple[str, int], ...] | None = None,
     ) -> Figure:
         """One dataset's embeddings: methods across, batch over cell type down."""
+        return self._panels(
+            {None: cached}, palette, columns=columns, title_pt=title_pt, groups=groups
+        )
+
+    def seed_panels(
+        self,
+        cached: Mapping[int, Mapping[str, tuple[np.ndarray, dict]]],
+        palette: np.ndarray,
+        *,
+        columns: tuple[tuple[str, str | None], ...],
+        title_pt: float = 8.0,
+        groups: tuple[tuple[str, int], ...] | None = None,
+    ) -> Figure:
+        """:meth:`embedding_panels` once per seed: two rows (batch, cell type) for each seed.
+
+        ``cached`` maps a seed to that seed's ``{method: (coordinates, cache)}``. Each pair of
+        rows is labelled with its seed at the left.
+        """
+        if not cached:
+            raise ValueError("need at least one seed")
+        return self._panels(cached, palette, columns=columns, title_pt=title_pt, groups=groups)
+
+    def _panels(self, by_seed, palette, *, columns, title_pt, groups) -> Figure:
         # Place batch and cell-type keys side by side to limit legend height.
         block = self._batch_legend()
         reserved = (
@@ -97,23 +148,21 @@ class QualitativeComposer:
             + self.style.qualitative_legend_gap
         )
         band = self.style.qualitative_group_band if groups else 0.0
-        geom = layout.square_grid(
-            len(columns),
-            len(self.style.qualitative_rows),
-            legend=reserved + band,
-            **self.style.qualitative_margins,
-        )
+        seeds = list(by_seed)
+        kinds = self.style.qualitative_rows
+        n_rows = len(seeds) * len(kinds)
+        margins = dict(self.style.qualitative_margins)
+        if seeds != [None]:
+            margins["left"] = margins["left"] + SEED_LABEL_IN
+        geom = layout.square_grid(len(columns), n_rows, legend=reserved + band, **margins)
         fig = plt.figure(figsize=geom.figsize)
         # Reserve gridspec rows for the legend and group band so neither overlaps panels.
         heights = [geom.figsize[1] - reserved - band, reserved]
         if groups:
             heights.insert(1, band)
         outer = fig.add_gridspec(len(heights), 1, height_ratios=heights)
-        inner = outer[0].subgridspec(len(self.style.qualitative_rows), len(columns))
-        axes = [
-            [fig.add_subplot(inner[r, c]) for c in range(len(columns))]
-            for r in range(len(self.style.qualitative_rows))
-        ]
+        inner = outer[0].subgridspec(n_rows, len(columns))
+        axes = [[fig.add_subplot(inner[r, c]) for c in range(len(columns))] for r in range(n_rows)]
         if groups:
             group_ax = fig.add_subplot(outer[1])
             group_ax.axis("off")
@@ -122,43 +171,51 @@ class QualitativeComposer:
         rng = np.random.default_rng(self.style.seed)
 
         for c, (key, heading) in enumerate(columns):
-            emb, cache_c = cached[key]
-            order = rng.permutation(len(emb))
-            for r, (color_kind, row_label) in enumerate(self.style.qualitative_rows):
-                if color_kind == "batch":
-                    colors = np.asarray(self.style.qualitative_batch_colours)[
-                        np.asarray(cache_c["batch_ids"], dtype=int)
-                    ]
-                else:
-                    labels = np.concatenate(
-                        [np.asarray(cache_c["labels0"][0]), np.asarray(cache_c["labels1"][0])]
-                    ).astype(int)
-                    colors = palette[labels]
-                ax = axes[r][c]
-                ax.scatter(
-                    emb[order, 0],
-                    emb[order, 1],
-                    c=colors[order],
-                    s=self._point_size(len(emb)),
-                    alpha=0.7,
-                    linewidths=0,
-                    edgecolors="none",
-                    zorder=-1,
-                )
-                ax.set(xticks=[], yticks=[])
-                self._fill_panel(ax, emb)
-                for spine in ax.spines.values():
-                    spine.set_visible(False)
-                if c == len(columns) - 1:
-                    # Place coloring labels on the right, separate from panel coordinates.
-                    ax.yaxis.set_label_position("right")
-                    # Use the column-heading font size for row labels.
-                    ax.set_ylabel(
-                        row_label, rotation=270, va="bottom", labelpad=6, fontsize=title_pt
+            for s, seed in enumerate(seeds):
+                emb, cache_c = by_seed[seed][key]
+                order = rng.permutation(len(emb))
+                for k, (color_kind, row_label) in enumerate(kinds):
+                    r = s * len(kinds) + k
+                    if color_kind == "batch":
+                        colors = np.asarray(self.style.qualitative_batch_colours)[
+                            np.asarray(cache_c["batch_ids"], dtype=int)
+                        ]
+                    else:
+                        labels = np.concatenate(
+                            [np.asarray(cache_c["labels0"][0]), np.asarray(cache_c["labels1"][0])]
+                        ).astype(int)
+                        colors = palette[labels]
+                    ax = axes[r][c]
+                    ax.scatter(
+                        emb[order, 0],
+                        emb[order, 1],
+                        c=colors[order],
+                        s=self._point_size(len(emb)),
+                        alpha=0.7,
+                        linewidths=0,
+                        edgecolors="none",
+                        zorder=-1,
                     )
-                if r == 0:
-                    text = heading if heading is not None else self.method_labels[key]
-                    ax.set_title(text, fontsize=title_pt)
+                    ax.set(xticks=[], yticks=[])
+                    self._fill_panel(ax, emb)
+                    for spine in ax.spines.values():
+                        spine.set_visible(False)
+                    if c == len(columns) - 1:
+                        # Place coloring labels on the right, separate from panel coordinates.
+                        ax.yaxis.set_label_position("right")
+                        # Use the column-heading font size for row labels.
+                        ax.set_ylabel(
+                            row_label, rotation=270, va="bottom", labelpad=6, fontsize=title_pt
+                        )
+                    if c == 0 and k == 0 and seed is not None:
+                        # Centred on the seed's pair of rows: half a row gap below this panel.
+                        ax.set_ylabel(f"Seed {seed}", fontsize=title_pt)
+                        ax.yaxis.set_label_coords(
+                            -SEED_LABEL_PAD, -0.5 * _row_gap_fraction(margins, geom.panel)
+                        )
+                    if r == 0:
+                        text = heading if heading is not None else self.method_labels[key]
+                        ax.set_title(text, fontsize=title_pt)
 
         self._qualitative_legend(legend_ax, block)
         # Place the rule after constrained layout settles the axes positions.

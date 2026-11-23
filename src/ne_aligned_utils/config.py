@@ -164,6 +164,19 @@ DEFAULT_PERPLEXITY = 30.0
 # 250 early-exaggeration iterations, then 500 main-phase iterations.
 DEFAULT_TSNE_EARLY_EXAGGERATION_ITER = 250
 DEFAULT_TSNE_N_ITER = 500
+# Jitter added to spectral, PCA, EOT and array inits, as a fraction of the first axis's SD.
+# 0.01 is openTSNE's default for its own PCA and spectral inits, and the only thing the seed
+# changes in these inits. Random inits get none.
+DEFAULT_INIT_JITTER = 0.01
+# Plan SVD behind OT-tSNE's spectral within-batch blocks: "randomized" (Halko et al. 2011),
+# "arpack", or "full" (every direction, the method as first benchmarked). The truncated solvers
+# keep the leading DEFAULT_OT_SVD_DIRECTIONS directions. When those are at least
+# OT_SVD_FULL_FRACTION of all directions (the smaller batch size), the full SVD runs instead:
+# there it was faster than randomized SVD at 1000 directions and is exact.
+OT_SVD_SOLVERS = ("randomized", "arpack", "full")
+DEFAULT_OT_SVD_SOLVER = "randomized"
+DEFAULT_OT_SVD_DIRECTIONS = 500
+OT_SVD_FULL_FRACTION = 0.5
 DEFAULT_UMAP_N_NEIGHBORS = 15
 
 # Method input and training defaults used by the benchmark adapters.
@@ -171,6 +184,8 @@ DEFAULT_UMAP_N_NEIGHBORS = 15
 DEFAULT_SEURAT_PRESELECTED_FEATURES = True
 DEFAULT_SEURAT_WORKFLOW = "v5_cca"
 DEFAULT_LIGER_PRESELECTED_FEATURES = True
+# Cores for LIGER's iNMF (rliger's nCores); 2 is rliger's own default.
+DEFAULT_LIGER_N_CORES = 2
 DEFAULT_REF_TSNE_PRESELECTED_FEATURES = True
 DEFAULT_SCVI_MAX_EPOCHS: int | None = None
 DEFAULT_SCVI_BATCH_SIZE = 128

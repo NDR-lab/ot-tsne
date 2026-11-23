@@ -27,9 +27,6 @@ from ne_aligned_utils.config import (
 )
 from ne_aligned_utils.evaluation.metrics import (
     DEFAULT_PURITY_K,
-    compute_concordance,
-    compute_cross_concordance,
-    compute_foscttm,
     compute_ilisi,
     compute_kbet,
     compute_kmeans_cluster_scores,
@@ -62,9 +59,6 @@ METRIC_COLUMNS = (
     "shared_cell_type_batch_mixing_score",
     "kmeans_rand_index",
     "kmeans_adjusted_rand_index",
-    "concordance_score",
-    "cross_concordance_score",
-    "foscttm_score",
 )
 
 
@@ -288,6 +282,13 @@ def iter_aggregate_embeddings(
                     }
             continue
 
+        # Recorded per method by the aggregate step; absent from caches made before it.
+        init_used_key = f"{embedding_key.removesuffix('_embeddings')}_init_used"
+        init_used = (
+            {"init_used": str(np.asarray(cache[init_used_key]).item())}
+            if init_used_key in cache
+            else {}
+        )
         for seed_index, seed in enumerate(seeds.tolist()):
             for rel_reg_index, rel_reg in enumerate(rel_reg_values.tolist()):
                 for k_index, effective_k in enumerate(effective_ks.tolist()):
@@ -295,6 +296,7 @@ def iter_aggregate_embeddings(
                         int(effective_k) if float(effective_k).is_integer() else float(effective_k)
                     )
                     yield {
+                        **init_used,
                         "method": method,
                         "backend": method_backend,
                         "method_label": method_display_label(
@@ -324,23 +326,6 @@ def _metric_result(function, *args, **kwargs) -> tuple[float, str]:
     return value, ""
 
 
-def _reference_batches(
-    cache: Mapping[str, np.ndarray], seed_index: int
-) -> tuple[np.ndarray, np.ndarray] | None:
-    key_pairs = (("reference_x0", "reference_x1"), ("clean0", "clean1"))
-    for key0, key1 in key_pairs:
-        if key0 not in cache or key1 not in cache:
-            continue
-        x0 = np.asarray(cache[key0], dtype=float)
-        x1 = np.asarray(cache[key1], dtype=float)
-        if x0.ndim == 3:
-            x0 = x0[seed_index]
-        if x1.ndim == 3:
-            x1 = x1[seed_index]
-        return x0, x1
-    return None
-
-
 def score_aggregate_cache(
     cache: Mapping[str, np.ndarray],
     methods: Iterable[str] | None = None,
@@ -362,14 +347,12 @@ def score_aggregate_cache(
     batch_ids = np.asarray(cache["batch_ids"], dtype=int)
     labels0 = np.asarray(cache["labels0"])
     labels1 = np.asarray(cache["labels1"])
-    n0 = labels0.shape[1]
     rows: list[dict[str, Any]] = []
 
     for record in iter_aggregate_embeddings(cache, methods, backend=backend):
         seed_index = int(record["seed_index"])
         labels = np.concatenate([labels0[seed_index], labels1[seed_index]])
         embedding = np.asarray(record.pop("embedding"), dtype=float)
-        y0, y1 = embedding[:n0], embedding[n0:]
 
         row = {
             "dataset": dataset,
@@ -378,6 +361,11 @@ def score_aggregate_cache(
             "init": str(cache.get("init", "random")),
             **record,
         }
+        if "init_used" in row and row["init_used"] != row["init"]:
+            raise ValueError(
+                f"{row['method']} rows are labelled init {row['init']!r} but their layouts "
+                f"started from {row['init_used']!r}; refusing to score them under that label."
+            )
         metric_calls = {
             "neighborhood_purity_score": (
                 compute_neighbor_purity, (embedding, labels), {"k": DEFAULT_PURITY_K}
@@ -425,38 +413,6 @@ def score_aggregate_cache(
             value, reason = _metric_result(function, *args, **kwargs)
             row[metric_name] = value
             row[f"{metric_name}_reason"] = reason
-
-        reference_metrics = selected_metrics.intersection(
-            {"concordance_score", "cross_concordance_score", "foscttm_score"}
-        )
-        references = _reference_batches(cache, seed_index) if reference_metrics else None
-        if reference_metrics and references is None:
-            reason = "aggregate cache does not include reference_x0/reference_x1"
-            for metric_name in reference_metrics:
-                row[metric_name] = np.nan
-                row[f"{metric_name}_reason"] = reason
-        elif references is not None:
-            x0, x1 = references
-            reference = np.concatenate([x0, x1])
-            reference_calls = {
-                "concordance_score": (
-                    compute_concordance,
-                    (reference, embedding),
-                    {"k": min(50, reference.shape[0])},
-                ),
-                "cross_concordance_score": (
-                    compute_cross_concordance,
-                    (x0, x1, y0, y1),
-                    {"k": min(50, x0.shape[0], x1.shape[0])},
-                ),
-                "foscttm_score": (compute_foscttm, (x0, x1, y0, y1), {}),
-            }
-            for metric_name, (function, args, kwargs) in reference_calls.items():
-                if metric_name not in reference_metrics:
-                    continue
-                value, reason = _metric_result(function, *args, **kwargs)
-                row[metric_name] = value
-                row[f"{metric_name}_reason"] = reason
 
         rows.append(row)
 

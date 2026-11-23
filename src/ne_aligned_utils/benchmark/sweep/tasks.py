@@ -42,10 +42,14 @@ from ne_aligned_utils.benchmark.sweep.registry import (
 from ne_aligned_utils.config import (
     BACKENDS,
     DEFAULT_BACKEND,
+    DEFAULT_INIT_JITTER,
+    DEFAULT_LIGER_N_CORES,
     DEFAULT_MULTIMAP_INIT,
     DEFAULT_MULTIMAP_MIN_DIST,
     DEFAULT_MULTIMAP_SPREAD,
     DEFAULT_MULTIMAP_USE_NATIVE_SCALING,
+    DEFAULT_OT_SVD_DIRECTIONS,
+    DEFAULT_OT_SVD_SOLVER,
     DEFAULT_REF_TSNE_PRESELECTED_FEATURES,
     DEFAULT_SCVI_BATCH_SIZE,
     DEFAULT_SCVI_MAX_EPOCHS,
@@ -75,6 +79,10 @@ def _tsne_early_exaggeration_iter(args: argparse.Namespace) -> int | None:
     return int(
         getattr(args, "tsne_early_exaggeration_iter", DEFAULT_TSNE_EARLY_EXAGGERATION_ITER)
     )
+
+
+def _init_jitter(args: argparse.Namespace) -> float:
+    return float(getattr(args, "init_jitter", DEFAULT_INIT_JITTER))
 
 
 def _count_library_size(args: argparse.Namespace) -> str:
@@ -333,6 +341,8 @@ def _compute_task(
         ot_params["knndiag_symmetrization"] = symmetrization_params["knndiag_symmetrization"]
 
     if args.task_kind == "ot":
+        svd_solver = str(getattr(args, "svd_solver", DEFAULT_OT_SVD_SOLVER))
+        svd_directions = int(getattr(args, "svd_directions", DEFAULT_OT_SVD_DIRECTIONS))
         embedding, artifacts = compute_ot_tsne_embedding_from_arrays(
             data.x0,
             data.x1,
@@ -350,8 +360,18 @@ def _compute_task(
             **symmetrization_params,
             return_artifacts=True,
             timer=timer,
+            # Optional: reuse the plan and SVD of runs that differ only in k or seed.
+            ot_cache_dir=getattr(args, "ot_cache_dir", None),
+            threads=getattr(args, "threads", None),
+            svd_solver=svd_solver,
+            svd_directions=svd_directions,
         )
-        return embedding, artifacts, dict(ot_params)
+        # Requested settings; the artifacts hold the solver used and directions kept.
+        requested = {
+            "svd_solver_requested": svd_solver,
+            "svd_directions_requested": svd_directions,
+        }
+        return embedding, artifacts, {**ot_params, **requested}
 
     if args.task_kind == "ot-knndiag":
         embedding, artifacts = compute_ot_tsne_knndiag_embedding_from_arrays(
@@ -807,6 +827,7 @@ def _compute_task(
                 return_artifacts=True,
                 timer=timer,
                 library_sizes=library_sizes,
+                n_cores=int(getattr(args, "liger_n_cores", DEFAULT_LIGER_N_CORES)),
             )
             return embedding, artifacts, {
                 "liger_k": 2,
@@ -828,6 +849,7 @@ def _compute_task(
                 return_artifacts=True,
                 timer=timer,
                 library_sizes=library_sizes,
+                n_cores=int(getattr(args, "liger_n_cores", DEFAULT_LIGER_N_CORES)),
             )
             return embedding, artifacts, {
                 "liger_k": 50,
@@ -998,8 +1020,12 @@ def _cached_setting_mismatches(payload: Any, args: argparse.Namespace) -> list[s
         )
     if kind in OT_PLAN_METHODS:
         expected["ot_device"] = str(getattr(args, "ot_device", "cpu"))
+    if kind in EPS_K_METHODS and str(getattr(args, "init", "random")) != "random":
+        expected["init_jitter"] = _init_jitter(args)
     # Values files written before a setting was recorded must have used.
     legacy = _legacy_watched_values(payload)
+    # Task files record the init jitter only when it differs from the default.
+    legacy["init_jitter"] = DEFAULT_INIT_JITTER
     if kind in COUNT_NORMALIZED_METHODS:
         legacy["count_library_size"] = LEGACY_COUNT_LIBRARY_SIZE
 
@@ -1129,7 +1155,9 @@ def run_task(args: argparse.Namespace) -> None:
         }
         method_params = {}
     else:
-        with instrument_embedders(timer):
+        from ne_aligned_utils.methods import use_init_jitter
+
+        with instrument_embedders(timer), use_init_jitter(_init_jitter(args)):
             embedding, artifacts, method_params = _compute_task(
                 data, args, timer=timer, library_sizes=library_sizes
             )
@@ -1181,7 +1209,10 @@ def run_task(args: argparse.Namespace) -> None:
             schema=schema,
             wall_outer=wall_outer,
             task_kind=str(args.task_kind),
-            representation_reused=bool(reuse_info.get("representation_reused", False)),
+            # A run that read the OT cache did not pay for the plan or SVD, so, like a reused
+            # representation, it has no comparable total.
+            representation_reused=bool(reuse_info.get("representation_reused", False))
+            or bool(artifacts.get("ot_cache_hit", False)),
             warmup=None if np.isnan(warmup_seconds) else warmup_seconds,
         )
     )

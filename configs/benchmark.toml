@@ -45,9 +45,18 @@ multimap_native = true
 # the authors' code defaults to 0.1, the value for the original ct-SNE.
 rc_tsne_beta = 0.0001
 ref_initialization_seed = "task_seed"
-ot_init = "random"
+# OT-tSNE only; the other methods start from their own initialization.
+ot_init = "eot"
 ot_tolerance = 1e-12
 ot_max_iterations = 10000
+# OT-tSNE's spectral within-batch blocks use the full SVD of the plan, as in the paper; without
+# these keys every manifest runs the full SVD. For a faster run, use a randomized SVD of the
+# leading directions instead:
+# ot_svd_solver = "randomized"
+# ot_svd_directions = 500
+# Cores for LIGER's iNMF, matching the thread allocation; rliger's default is 2.
+# Manifests without this key ran at the default.
+liger_n_cores = 4
 
 [resources.cpu]
 threads = 4

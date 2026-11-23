@@ -15,8 +15,13 @@ import numpy as np
 import pandas as pd
 
 from ne_aligned_utils import config
+from ne_aligned_utils.benchmark.pipeline import with_run_settings
 from ne_aligned_utils.paper import registry
-from ne_aligned_utils.paper.selection.benchmark import canonical_mask
+from ne_aligned_utils.paper.selection.benchmark import (
+    CURRENT_BENCHMARK,
+    BenchmarkSelectionPolicy,
+    canonical_mask,
+)
 
 #: Exclude the shared-type subset to avoid counting the same tissue twice in pooled ranks.
 CANONICAL_DATASETS: tuple[str, ...] = (
@@ -66,21 +71,10 @@ def _read_metric_table(root: Path, dataset: str) -> tuple[Path, pd.DataFrame]:
     return path, table
 
 
-def _native_multimap_arms(root: Path) -> set[tuple[str, str]]:
-    """Read native-profile MultiMAP arms from the combined task metadata when available."""
+def _task_metadata(root: Path) -> pd.DataFrame:
+    """The results root's ``task_metadata.csv``, or an empty table when it has none."""
     path = root / "task_metadata.csv"
-    if not path.is_file():
-        return set()
-    table = pd.read_csv(path)
-    required = {"dataset", "method", "arm_id", "method_settings"}
-    if not required.issubset(table.columns):
-        return set()
-    arms: set[tuple[str, str]] = set()
-    for row in table.loc[table["method"].astype(str) == "multimap"].itertuples():
-        settings = json.loads(str(row.method_settings))
-        if bool(settings.get("native_profile", False)):
-            arms.add((str(row.dataset), str(row.arm_id)))
-    return arms
+    return pd.read_csv(path) if path.is_file() else pd.DataFrame()
 
 
 def _local_cache(root: Path, dataset: str, source: str) -> Path:
@@ -129,16 +123,24 @@ def _method_key(
     result_source: str,
     source_cache: str = "",
     *,
-    native_profile: bool = False,
+    method_settings: object = None,
 ) -> str:
-    if method == "multimap":
-        return multimap_key(
-            native_profile
-            or result_source == "supplementary:multimap_native"
-            or "multimap_native" in Path(source_cache).parts
-            or (bool(source_cache) and _multimap_arm_is_native(source_cache))
-        )
-    return method
+    """The paper's name for a row's method; tells the two MultiMAP arms apart.
+
+    A row's own recorded settings decide. Rows without them (a supplementary arm swapped into an
+    older tree) fall back to where they came from and to the flag in their task files.
+    """
+    if method != "multimap":
+        return method
+    if isinstance(method_settings, str) and method_settings:
+        settings = json.loads(method_settings)
+        if "native_profile" in settings:
+            return multimap_key(bool(settings["native_profile"]))
+    return multimap_key(
+        result_source == "supplementary:multimap_native"
+        or "multimap_native" in Path(source_cache).parts
+        or (bool(source_cache) and _multimap_arm_is_native(source_cache))
+    )
 
 
 def _validate_supplementary_manifest(
@@ -227,6 +229,11 @@ def _replace_with_supplementary(
         corrected = supplementary.set_index(supplementary["seed"].astype(int), drop=False)
         for column in corrected.columns:
             replacement[column] = corrected[column]
+        # The slot's settings describe the replaced arm, not this one; keep them only when the
+        # supplementary table records its own.
+        for column in ("method_settings", "configuration"):
+            if column not in corrected.columns:
+                replacement[column] = pd.Series(None, index=replacement.index, dtype=object)
         replacement["source_cache"] = str(aggregate_path.resolve())
         replacement["result_source"] = f"supplementary:{arm}"
         replacement["supplementary_manifest"] = str(manifest_path)
@@ -242,17 +249,19 @@ def load_canonical_frame(
     datasets: Sequence[str] = CANONICAL_DATASETS,
     supplementary_root: Path | None = None,
     require_source_caches: bool = True,
+    policy: BenchmarkSelectionPolicy = CURRENT_BENCHMARK,
 ) -> pd.DataFrame:
-    """Return the canonical paper frame for ``datasets``.
+    """Return the paper frame for ``datasets`` at one configuration, ``policy``.
 
     The returned shape matches the metric/rank/embedding renderers: one row per downstream seed,
     with canonical balanced OT selected before any averaging or ranking.
     """
     root = Path(root).resolve()
-    native_multimap_arms = _native_multimap_arms(root)
+    task_metadata = _task_metadata(root)
     pieces: list[pd.DataFrame] = []
     for dataset in datasets:
         path, table = _read_metric_table(root, dataset)
+        table = with_run_settings(table, task_metadata)
         if supplementary_root is not None:
             table = _replace_with_supplementary(
                 table,
@@ -263,7 +272,7 @@ def load_canonical_frame(
         else:
             table["result_source"] = "frozen_benchmark"
             table["supplementary_manifest"] = ""
-        canonical = int(canonical_mask(table).sum())
+        canonical = int(canonical_mask(table, policy).sum())
         if canonical != EXPECTED_CANONICAL_ROWS:
             raise ValueError(
                 f"{path} has {len(table)} rows of which {canonical} are canonical; "
@@ -272,7 +281,7 @@ def load_canonical_frame(
         pieces.append(table)
 
     frame = pd.concat(pieces, ignore_index=True)
-    frame = frame[canonical_mask(frame)].copy()
+    frame = frame[canonical_mask(frame, policy)].copy()
     if require_source_caches:
         frame["source_cache"] = [
             str(_local_cache(root, str(dataset), str(source)))
@@ -284,14 +293,13 @@ def load_canonical_frame(
             str(method),
             str(source),
             str(cache),
-            native_profile=(str(dataset), str(arm_id)) in native_multimap_arms,
+            method_settings=settings,
         )
-        for method, source, cache, dataset, arm_id in zip(
+        for method, source, cache, settings in zip(
             frame["method"],
             frame["result_source"],
             frame["source_cache"],
-            frame["dataset"],
-            frame["arm_id"],
+            frame["method_settings"],
             strict=True,
         )
     ]

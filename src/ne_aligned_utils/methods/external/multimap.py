@@ -21,7 +21,7 @@ from ne_aligned_utils.methods import _split_joint_embedding, _validate_pair_arra
 
 PY_SCRIPTS_DIR = Path(__file__).resolve().parent / "py_scripts"
 MULTIMAP_PYTHON_ENV_VAR = "NE_ALIGNED_MULTIMAP_PYTHON"
-#: Conventional location of the isolated venv (see py_scripts/README.md); used
+#: Conventional location of the isolated venv (see ../README.md); used
 #: only when the environment variable above is unset.
 DEFAULT_MULTIMAP_PYTHON = Path.home() / ".venvs" / "ne-aligned-multimap" / "bin" / "python"
 DEFAULT_TIMEOUT_SECONDS = 3600
@@ -49,7 +49,7 @@ def multimap_python_command() -> list[str]:
         return [str(DEFAULT_MULTIMAP_PYTHON)]
     raise MultiMapSubprocessError(
         "No MultiMAP interpreter found. MultiMAP needs its own numpy<2 environment; "
-        f"create one (see {PY_SCRIPTS_DIR / 'README.md'}) and point "
+        f"create one (see {PY_SCRIPTS_DIR.parent / 'README.md'}) and point "
         f"{MULTIMAP_PYTHON_ENV_VAR} at its python, or install it at "
         f"{DEFAULT_MULTIMAP_PYTHON}."
     )

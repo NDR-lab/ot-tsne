@@ -10,6 +10,7 @@ from ne_aligned_utils.methods.common import (
     validate_positive_integer as _validate_positive_integer,
 )
 from ne_aligned_utils.methods.embedders import embed_2d, embedder_artifacts
+from ne_aligned_utils.methods.ot_graph import leading_plan_modes
 
 
 #: Marginal constraints supported by ``compute_ot_plan``.
@@ -123,6 +124,22 @@ def _validate_unbalanced_plan(plan: np.ndarray, solver_method: str) -> None:
         )
 
 
+def _sinkhorn_convergence(log: dict, *, tol: float) -> dict[str, object]:
+    """Iterations and final marginal error of a balanced Sinkhorn solve, from POT's log.
+
+    POT checks the marginal error every tenth iteration and stops once it is below ``tol``. It
+    stops early without converging on numerical errors, and runs out at ``max_iter`` otherwise.
+    """
+    errors = [float(err) for err in log.get("err", [])]
+    final_error = errors[-1] if errors else float("nan")
+    return {
+        # POT's loop index of the last iteration, so iterations run = sinkhorn_niter + 1.
+        "sinkhorn_niter": int(log["niter"]),
+        "sinkhorn_final_error": final_error,
+        "sinkhorn_converged": bool(final_error < tol),
+    }
+
+
 def compute_ot_plan(
     x0: np.ndarray,
     x1: np.ndarray,
@@ -183,15 +200,18 @@ def compute_ot_plan(
     if transport == BALANCED_TRANSPORT:
         # Keep the balanced solver distinct from the unbalanced limiting case.
         with _stage(timer, "time_ot_solve"):
-            plan = ot.sinkhorn(
+            # The log only records the marginal error POT computes anyway; the plan is unchanged.
+            plan, sinkhorn_log = ot.sinkhorn(
                 a,
                 b,
                 dist,
                 reg=epsilon,
                 numItermax=int(max_iter),
                 stopThr=float(tol),
+                log=True,
             )
             _synchronize_device(torch_module, torch_device)
+        sinkhorn_info = _sinkhorn_convergence(sinkhorn_log, tol=float(tol))
         reg_m = None
         rel_reg_m = None
     else:
@@ -228,6 +248,8 @@ def compute_ot_plan(
         # Record the selected POT device, including torch-cpu.
         "ot_device": device,
     }
+    if transport == BALANCED_TRANSPORT:
+        artifacts.update(sinkhorn_info)
     if transport == UNBALANCED_TRANSPORT:
         artifacts.update(
             {
@@ -254,6 +276,11 @@ def compute_eot_embedding_from_plan(
 
     ``start`` skips leading modes (one by default); the output dimension is capped
     by the available modes. Rows follow batch 0, then batch 1.
+
+    Only the leading ``start + embd_dim`` modes are computed, by a truncated ARPACK solve
+    (``leading_plan_modes``). It matches the full SVD up to rounding and column signs, at
+    quadratic instead of cubic cost in the batch sizes. The ``u``, ``vt`` and
+    ``singular_values`` artifacts therefore hold only those leading modes.
     """
     plan = np.asarray(plan, dtype=float)
     if plan.ndim != 2:
@@ -264,8 +291,7 @@ def compute_eot_embedding_from_plan(
         raise ValueError(f"t must be finite, got {t}.")
 
     n0, n1 = plan.shape
-    u, singular_values, vt = np.linalg.svd(plan, full_matrices=False)
-    max_dim = min(u.shape[1], vt.shape[0]) - start
+    max_dim = min(n0, n1) - start
     if max_dim <= 0:
         raise ValueError(
             "EOT needs at least one non-trivial singular vector after dropping the "
@@ -275,9 +301,12 @@ def compute_eot_embedding_from_plan(
     embd_dim = _validate_positive_integer(embd_dim, "embd_dim")
     q = min(embd_dim, max_dim)
     stop = start + q
+    singular_values, stacked = leading_plan_modes(plan, n_modes=stop)
+    u = stacked[:n0] / np.sqrt(n0)
+    vt = (stacked[n0:] / np.sqrt(n1)).T
     weights = singular_values[start:stop] ** t
-    left_embedding = u[:, start:stop] * weights * np.sqrt(n0)
-    right_embedding = vt.T[:, start:stop] * weights * np.sqrt(n1)
+    left_embedding = stacked[:n0, start:stop] * weights
+    right_embedding = stacked[n0:, start:stop] * weights
     joint_embedding = np.concatenate([left_embedding, right_embedding], axis=0)
 
     if not return_artifacts:

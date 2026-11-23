@@ -16,6 +16,9 @@ seed <- as.integer(input$params$seed)
 preselected_features <- isTRUE(as.logical(input$params$preselected_features)[1])
 requested_features <- as.integer(input$params$requested_features)[1]
 if (is.na(requested_features)) requested_features <- 0L
+# Cores for iNMF; absent from older callers, which ran at rliger's default of 2.
+n_cores <- as.integer(input$params$n_cores)[1]
+if (length(n_cores) == 0L || is.na(n_cores)) n_cores <- 2L
 set.seed(seed)
 
 algo_start <- elapsed_seconds()
@@ -49,7 +52,9 @@ if (preselected_features) {
 }
 
 liger_object <- scaleNotCenter(liger_object, verbose = FALSE)
-liger_object <- runIntegration(liger_object, k = k, seed = seed, verbose = FALSE)
+liger_object <- runIntegration(
+  liger_object, k = k, seed = seed, nCores = n_cores, verbose = FALSE
+)
 liger_object <- alignFactors(liger_object, seed = seed)
 cat(sprintf("NE_ALIGNED_LIGER_SELECTED_FEATURES=%d\n", length(varFeatures(liger_object))))
 

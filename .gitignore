@@ -10,10 +10,6 @@ __pycache__/
 .mypy_cache/
 .ipynb_checkpoints/
 
-# Local development tools and tests.
-/scripts/dev/
-/tests/
-
 # Environments and local tool state
 .venv/
 .claude/
@@ -39,6 +35,8 @@ dist/
 !/data/nCoV/preprocessed/labels2.npy
 !/data/nCoV/preprocessed/cell_type_names.npy
 !/data/nCoV/preprocessed/dataset_names.npy
+# Recorded MNIST batch construction for the walkthrough notebooks.
+!/data/mnist/**
 
 # Keep benchmark inputs and local reruns private, including their manifests.
 /data/benchmark/

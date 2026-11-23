@@ -88,6 +88,12 @@ QUALITATIVE_GROUPS: tuple[tuple[str, int], ...] = (
     ("Integrated embeddings in 50D → t-SNE", 5),
 )
 
+#: Seed galleries of the OT-tSNE variants: the default first, then the diagonal ablations.
+OT_SEED_COLUMNS: tuple[tuple[str, str], ...] = tuple(
+    (key, registry.METHODS[key].legend_label)
+    for key in ("ot", "ot-selfotmedian", "ot-zerodiag", "ot-gramdiag", "ot-knndiag")
+)
+
 QUALITATIVE_ROWS: tuple[tuple[str, str], ...] = (
     ("batch", "Batch"),
     ("cell type", "Cell type"),

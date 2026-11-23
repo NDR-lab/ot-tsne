@@ -1,7 +1,7 @@
 """Shared configuration, graph utilities and artifacts for the inline MNIST walkthrough.
 
 Scientific construction and experiment loops live in
-notebooks/mnist_orthogonal_batch_effect_walkthrough.ipynb. No computation occurs on import.
+notebooks/mnist_orthogonal_batch_effect.ipynb. No computation occurs on import.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sklearn.decomposition import PCA
 from sklearn.neighbors import NearestNeighbors
 from torchvision.datasets import MNIST
 
@@ -128,6 +129,72 @@ def sample_mnist(data_root: Path, n_per_digit: int, sampling_seed: int, *, downl
     ):
         raise AssertionError("Each batch must contain exactly n_per_digit images per class")
     return x0_images, labels0, x1_images, labels1, batch0_indices, batch1_indices
+
+
+#: Arrays of a recorded construction that come from sampling MNIST, and from fitting the PCA.
+CONSTRUCTION_SAMPLE_KEYS = (
+    "batch0_indices",
+    "batch1_indices",
+    "labels0",
+    "labels1",
+    "clean0",
+    "clean1",
+)
+CONSTRUCTION_PCA_KEYS = ("pca_components", "pca_mean", "pca_variance")
+
+
+def build_mnist_construction(
+    data_root: Path, n_per_digit: int, sampling_seed: int, *, download: bool = False
+) -> dict[str, np.ndarray]:
+    """Sample both MNIST batches and fit the pooled full-SVD PCA.
+
+    Returns the arrays a recorded ``data/construction.npz`` holds, under the same names. With
+    ``download``, torchvision downloads MNIST into ``data_root`` when it is missing.
+    """
+    x0, labels0, x1, labels1, batch0_indices, batch1_indices = sample_mnist(
+        data_root, n_per_digit, sampling_seed, download=download
+    )
+    pca = PCA(n_components=None, svd_solver="full").fit(np.vstack([x0, x1]))
+    return dict(
+        batch0_indices=batch0_indices,
+        batch1_indices=batch1_indices,
+        labels0=labels0,
+        labels1=labels1,
+        clean0=x0,
+        clean1=x1,
+        pca_components=pca.components_,
+        pca_mean=pca.mean_,
+        pca_variance=pca.explained_variance_,
+    )
+
+
+def compare_construction(built: dict, recorded: dict, *, rtol: float = 1e-8) -> str:
+    """Compare a built construction with a recorded one.
+
+    The sampled digits and images must match exactly; otherwise this raises. The PCA can differ
+    in the last digits between machines, and each component's sign is arbitrary. Returns
+    ``"identical"``, or ``"pca within rounding"`` when only the PCA differs and stays within
+    ``rtol``; raises if it differs by more.
+    """
+    for key in CONSTRUCTION_SAMPLE_KEYS:
+        if not np.array_equal(built[key], recorded[key]):
+            raise ValueError(f"Built MNIST construction differs from the recorded one in {key}.")
+    if all(np.array_equal(built[key], recorded[key]) for key in CONSTRUCTION_PCA_KEYS):
+        return "identical"
+    components, reference = built["pca_components"], recorded["pca_components"]
+    signs = np.sign(np.sum(components * reference, axis=1))[:, None]
+    scale = recorded["pca_variance"][0]
+    close = np.allclose(built["pca_mean"], recorded["pca_mean"], rtol=rtol, atol=0) and np.allclose(
+        built["pca_variance"], recorded["pca_variance"], rtol=0, atol=rtol * scale
+    )
+    # Directions with almost no variance are not identifiable; compare the resolved ones.
+    resolved = recorded["pca_variance"] > 1e-10 * scale
+    close = close and np.allclose(
+        components[resolved] * signs[resolved], reference[resolved], rtol=0, atol=1e-6
+    )
+    if not close:
+        raise ValueError("Built MNIST PCA differs from the recorded one by more than rounding.")
+    return "pca within rounding"
 
 
 @dataclass(frozen=True)

@@ -75,24 +75,38 @@ def round_three_ticks(
         (xvalues, ax.set_xticks, ax.set_xlim, n_x, step if step_x is None else step_x),
         (yvalues, ax.set_yticks, ax.set_ylim, n_y, step if step_y is None else step_y),
     ):
-        finite = np.asarray([v for v in np.ravel(values) if np.isfinite(v)], dtype=float)
-        if finite.size == 0:
+        rounded = round_ticks(values, step=axis_step, count=count)
+        if rounded is None:
             continue
-        low = np.floor(float(finite.min()) / axis_step) * axis_step
-        high = np.ceil(float(finite.max()) / axis_step) * axis_step
-        if high - low < axis_step:
-            high = low + axis_step
-        wanted = {round(low, 10), round(high, 10)}
-        if count >= 3:
-            wanted.add(round(round(((low + high) / 2.0) / axis_step) * axis_step, 10))
-        ticks = sorted(wanted)
-        set_ticks(ticks)
-        pad = 0.05 * (high - low)
-        set_lim(low - pad, high + pad)
+        set_ticks(rounded[0])
+        set_lim(*rounded[1])
 
-    def _fmt(values, axis_step):
-        decimals = 1 if axis_step >= 0.1 - 1e-9 else 2
-        return [f"{t:.{decimals}f}" for t in values]
+    ax.set_xticklabels(tick_labels(ax.get_xticks(), step if step_x is None else step_x))
+    ax.set_yticklabels(tick_labels(ax.get_yticks(), step if step_y is None else step_y))
 
-    ax.set_xticklabels(_fmt(ax.get_xticks(), step if step_x is None else step_x))
-    ax.set_yticklabels(_fmt(ax.get_yticks(), step if step_y is None else step_y))
+
+def round_ticks(
+    values, *, step: float = 0.05, count: int = 3
+) -> tuple[list[float], tuple[float, float]] | None:
+    """Round ticks enclosing ``values`` and the padded axis limits around them.
+
+    The axis rule of :func:`round_three_ticks`, for one axis; ``None`` when no value is finite.
+    """
+    finite = np.asarray([v for v in np.ravel(values) if np.isfinite(v)], dtype=float)
+    if finite.size == 0:
+        return None
+    low = np.floor(float(finite.min()) / step) * step
+    high = np.ceil(float(finite.max()) / step) * step
+    if high - low < step:
+        high = low + step
+    wanted = {round(low, 10), round(high, 10)}
+    if count >= 3:
+        wanted.add(round(round(((low + high) / 2.0) / step) * step, 10))
+    pad = 0.05 * (high - low)
+    return sorted(wanted), (low - pad, high + pad)
+
+
+def tick_labels(values, step: float) -> list[str]:
+    """Tick labels with one decimal for steps of 0.1 or more, two otherwise."""
+    decimals = 1 if step >= 0.1 - 1e-9 else 2
+    return [f"{t:.{decimals}f}" for t in values]

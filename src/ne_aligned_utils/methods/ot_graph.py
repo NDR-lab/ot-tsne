@@ -2,6 +2,9 @@
 
 import time
 import warnings
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 
 import numpy as np
@@ -10,9 +13,11 @@ import umap
 from openTSNE import TSNE, affinity, initialization
 from openTSNE.affinity import Affinities
 from openTSNE.initialization import jitter
+from sklearn.decomposition import PCA
 
 from ne_aligned_utils.config import (
     DEFAULT_BACKEND,
+    DEFAULT_INIT_JITTER,
     DEFAULT_TSNE_EARLY_EXAGGERATION_ITER,
     DEFAULT_TSNE_N_ITER,
 )
@@ -21,11 +26,10 @@ from ne_aligned_utils.methods.common import (
     validate_batch_sizes as _validate_batch_sizes,
     validate_matrix as _validate_matrix,
 )
-from ne_aligned_utils.methods.ot_transport import compute_eot_embedding_from_plan
 
 
 #: OT-tSNE initialization schemes.
-OT_TSNE_INIT_CHOICES = ("random", "spectral", "eot")
+OT_TSNE_INIT_CHOICES = ("random", "spectral", "eot", "pca")
 
 
 @dataclass(frozen=True)
@@ -804,6 +808,26 @@ def normalize_ot_tsne_graph(matrix: np.ndarray) -> np.ndarray:
 #: Seed variation then enters through initialization jitter.
 SPECTRAL_SOLVER_SEED = 0
 
+#: Init jitter for the OT-tSNE layouts computed inside ``use_init_jitter``.
+_INIT_JITTER: ContextVar[float] = ContextVar("init_jitter", default=DEFAULT_INIT_JITTER)
+
+
+@contextmanager
+def use_init_jitter(scale: float) -> Iterator[None]:
+    """Use ``scale`` as the init jitter for every OT-tSNE layout computed inside the block."""
+    scale = float(scale)
+    if not np.isfinite(scale) or scale < 0.0:
+        raise ValueError(f"init jitter must be finite and non-negative, got {scale}.")
+    token = _INIT_JITTER.set(scale)
+    try:
+        yield
+    finally:
+        _INIT_JITTER.reset(token)
+
+
+def current_init_jitter() -> float:
+    return _INIT_JITTER.get()
+
 
 def _flip_init_signs(init: np.ndarray) -> np.ndarray:
     """Make each column's largest-magnitude entry positive to fix singular-vector sign ambiguity."""
@@ -817,11 +841,12 @@ def _finalize_tsne_init(
     init: np.ndarray,
     init_scale: float = 10000.0,
     random_state: int = 0,
-    jitter_scale: float = 0.01,
+    jitter_scale: float | None = None,
 ) -> np.ndarray:
     """Fix column signs, scale the first axis to ``1 / init_scale``, and add seeded jitter.
 
-    Jitter allows seed variation for deterministic EOT and spectral coordinates.
+    Jitter allows seed variation for deterministic EOT and spectral coordinates. ``None`` uses
+    the scale set by ``use_init_jitter`` (default ``DEFAULT_INIT_JITTER``); 0 adds none.
     Reject non-finite inputs and a degenerate first axis rather than distort geometry.
     """
     init = np.asarray(init, dtype=float)
@@ -842,6 +867,8 @@ def _finalize_tsne_init(
         )
     init = init / (init_std * float(init_scale))
 
+    if jitter_scale is None:
+        jitter_scale = current_init_jitter()
     if jitter_scale > 0.0:
         init = jitter(
             init,
@@ -852,9 +879,18 @@ def _finalize_tsne_init(
 
 
 def _is_symmetric(
-    matrix: np.ndarray, rtol: float = 1e-7, atol: float = 1e-12, block: int = 1024
+    matrix: np.ndarray | sp.spmatrix, rtol: float = 1e-7, atol: float = 1e-12, block: int = 1024
 ) -> bool:
-    """Check symmetry in row blocks to bound temporary memory."""
+    """Check symmetry, in row blocks for dense input to bound temporary memory."""
+    if sp.issparse(matrix):
+        matrix = sp.csr_matrix(matrix)
+        difference = abs(matrix - matrix.T)
+        if difference.nnz == 0:
+            return True
+        # Same tolerance as np.allclose, against |A.T| for each stored difference.
+        rows, cols = difference.nonzero()
+        reference = np.abs(np.asarray(matrix.T[rows, cols]).ravel())
+        return bool(np.all(np.asarray(difference[rows, cols]).ravel() <= atol + rtol * reference))
     for start in range(0, matrix.shape[0], block):
         stop = min(start + block, matrix.shape[0])
         if not np.allclose(matrix[start:stop, :], matrix[:, start:stop].T, rtol=rtol, atol=atol):
@@ -862,12 +898,16 @@ def _is_symmetric(
     return True
 
 
-def _spectral_init(graph: np.ndarray) -> tuple[np.ndarray | None, dict[str, object]]:
+def _spectral_init(
+    graph: np.ndarray | sp.spmatrix,
+) -> tuple[np.ndarray | None, dict[str, object]]:
     """Initialize from diffusion coordinates of the joint OT affinity graph.
 
     Solve ``A v = lambda D v``, sort eigenpairs together, drop the leading mode,
-    and weight the remaining vectors by their eigenvalues. Return ``(None, info)``
-    for structural or numerical degeneracy so the caller can use random coordinates.
+    and weight the remaining vectors by their eigenvalues; this is openTSNE's
+    ``initialization.spectral``. Sparse input stays sparse. Return ``(None, info)``
+    with the reason in ``info["spectral_skipped"]`` for structural or numerical
+    degeneracy; ``run_tsne_from_graph`` turns that into an error.
     Asymmetric input is an error: initialization must use the optimized affinities.
     """
     info: dict[str, object] = {}
@@ -889,7 +929,7 @@ def _spectral_init(graph: np.ndarray) -> tuple[np.ndarray | None, dict[str, obje
         info["spectral_skipped"] = "zero_degree_row"
         return None, info
 
-    adjacency = sp.csr_matrix(graph)
+    adjacency = sp.csr_matrix(graph, dtype=float)
     v0 = np.random.RandomState(SPECTRAL_SOLVER_SEED).uniform(-1.0, 1.0, n_points)
     try:
         eigenvalues, eigenvectors = sp.linalg.eigsh(
@@ -924,6 +964,43 @@ def _spectral_init(graph: np.ndarray) -> tuple[np.ndarray | None, dict[str, obje
     return np.asarray(embedding, dtype=float), info
 
 
+def _pca_init(x: np.ndarray) -> np.ndarray:
+    """Return the first two principal components of ``x``, as openTSNE's ``initialization.pca``.
+
+    The full SVD makes the result exact and independent of the run seed; seed variation enters
+    through the jitter that ``_finalize_tsne_init`` adds, as for the other non-random schemes.
+    """
+    x = np.asarray(x, dtype=float)
+    if x.ndim != 2 or x.shape[1] < 2:
+        raise ValueError(f"init='pca' needs a 2D input with at least 2 columns, got {x.shape}.")
+    return np.asarray(PCA(n_components=2, svd_solver="full").fit_transform(x), dtype=float)
+
+
+#: Singular modes the EOT init needs: the trivial first mode and the two init axes.
+EOT_INIT_MODES = 3
+
+
+def leading_plan_modes(
+    plan: np.ndarray, n_modes: int = EOT_INIT_MODES
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the plan's leading singular values and stacked basis ``[sqrt(n0) U; sqrt(n1) V]``.
+
+    A truncated ARPACK solve with a fixed start vector is deterministic and matches the full
+    SVD up to rounding and column signs, at a small fraction of its cost on large plans.
+    """
+    plan = np.asarray(plan, dtype=float)
+    n0, n1 = plan.shape
+    if min(n0, n1) <= n_modes:  # ARPACK needs fewer modes than the smaller side
+        u, s, vt = np.linalg.svd(plan, full_matrices=False)
+        u, s, vt = u[:, :n_modes], s[:n_modes], vt[:n_modes]
+    else:
+        v0 = np.random.RandomState(SPECTRAL_SOLVER_SEED).uniform(-1.0, 1.0, min(n0, n1))
+        u, s, vt = sp.linalg.svds(plan, k=n_modes, v0=v0, solver="arpack", tol=0)
+        order = np.argsort(s)[::-1]  # svds returns ascending order
+        u, s, vt = u[:, order], s[order], vt[order]
+    return s, np.concatenate([u * np.sqrt(n0), vt.T * np.sqrt(n1)], axis=0)
+
+
 def _resolve_plan_init(
     init: str | np.ndarray,
     plan: np.ndarray,
@@ -935,16 +1012,15 @@ def _resolve_plan_init(
     columns are eigenvectors of ``E diag(s) E.T / sqrt(n0 * n1)``. Use the shared
     plan basis across variants to keep initialization independent of diagonal changes.
     """
-    if isinstance(init, np.ndarray) or init in ("random", "spectral"):
+    if isinstance(init, np.ndarray) or init in ("random", "spectral", "pca"):
+        # "pca" reads the input features, which run_tsne_from_graph receives as pca_input.
         return init
     if init != "eot":
         raise ValueError(
             f"init must be one of {OT_TSNE_INIT_CHOICES} or an (n, 2) array, got {init!r}."
         )
     if eot_coordinates is None:
-        eot = np.asarray(
-            compute_eot_embedding_from_plan(plan, t=0.0, embd_dim=2, start=1), dtype=float
-        )
+        eot = np.asarray(leading_plan_modes(plan)[1][:, 1:3], dtype=float)
     else:
         # At t=0, singular-value weights are one; the stacked basis needs no rescaling.
         eot = np.asarray(eot_coordinates[:, 1:3], dtype=float)
@@ -1077,12 +1153,17 @@ def run_tsne_from_graph(
     timer: object | None = None,
     n_jobs: int = 1,
     early_exaggeration_iter: int | None = DEFAULT_TSNE_EARLY_EXAGGERATION_ITER,
+    pca_input: np.ndarray | None = None,
+    init_label: str | None = None,
 ) -> np.ndarray:
     """Optimize a 2D t-SNE layout from dense or sparse joint affinities.
 
-    ``init`` accepts random coordinates, graph diffusion coordinates, or an ``(n, 2)``
-    array. Spectral degeneracy falls back to random initialization; ``init_info``
-    records the actual scheme and diagnostics in place.
+    ``init`` accepts ``"random"``, ``"spectral"`` (graph diffusion coordinates),
+    ``"pca"`` (the first two principal components of ``pca_input``), or an ``(n, 2)``
+    array. There is no fallback: a spectral initialization that cannot be computed is
+    an error, so a run never reports one scheme while using another. ``init_info``
+    records the scheme used as ``init_used``; for an array that is ``init_label``
+    (for example ``"eot"`` for plan coordinates), or ``"array"`` when none is given.
 
     By default this is openTSNE's schedule: ``early_exaggeration_iter`` (250) exaggerated
     iterations, then ``n_epochs`` (500) main-phase iterations. ``early_exaggeration_iter=None``
@@ -1136,38 +1217,46 @@ def run_tsne_from_graph(
                 f"A precomputed init must have shape {(n_points, 2)}, got {candidate.shape}."
             )
         resolved = _finalize_tsne_init(candidate, init_scale, int(random_state))
-        info["init_used"] = "array"
+        info["init_used"] = "array" if init_label is None else str(init_label)
     elif init == "spectral":
-        # The spectral initializer requires dense input.
-        candidate, spectral_info = _spectral_init(graph.toarray() if sparse_input else graph)
-        info.update(spectral_info)
+        candidate, spectral_info = _spectral_init(graph)
         if candidate is None:
-            warnings.warn(
+            raise ValueError(
                 "Spectral initialization is unavailable for this graph "
-                f"({spectral_info.get('spectral_skipped', 'unknown')}); falling back to the "
-                "random initialization.",
-                RuntimeWarning,
-                stacklevel=2,
+                f"({spectral_info.get('spectral_skipped', 'unknown')}). There is no fallback to "
+                "random coordinates: the run would be reported as spectral when it was not."
             )
-        else:
-            resolved = _finalize_tsne_init(candidate, init_scale, int(random_state))
-            info["init_used"] = "spectral"
+        info.update(spectral_info)
+        resolved = _finalize_tsne_init(candidate, init_scale, int(random_state))
+        info["init_used"] = "spectral"
+    elif init == "pca":
+        if pca_input is None:
+            raise ValueError("init='pca' needs pca_input, the features the graph was built from.")
+        pca_input = np.asarray(pca_input, dtype=float)
+        if pca_input.shape[0] != n_points:
+            raise ValueError(
+                f"pca_input has {pca_input.shape[0]} rows but the graph has {n_points} points."
+            )
+        resolved = _finalize_tsne_init(_pca_init(pca_input), init_scale, int(random_state))
+        info["init_used"] = "pca"
     elif init != "random":
         raise ValueError(
             f"init must be one of {OT_TSNE_INIT_CHOICES} or an (n, 2) array, got {init!r}."
         )
 
     if resolved is None:
-        # Random initialization also serves as the spectral fallback.
         # Do not apply the sign fixing or jitter used for non-random coordinates.
         resolved = np.random.RandomState(int(random_state)).randn(n_points, 2)
         init_std = float(resolved[:, 0].std())
         resolved = resolved / (max(init_std, 1e-12) * float(init_scale))
-        info.setdefault("init_used", "random")
+        info["init_used"] = "random"
 
     if timer is not None:
         timer.record("time_embedding_initialization", time.perf_counter() - _init_start)
 
+    if info["init_used"] != "random" and current_init_jitter() != DEFAULT_INIT_JITTER:
+        # Recorded only when changed, so default task files keep their fields.
+        info["init_jitter"] = current_init_jitter()
     if init_info is not None:
         init_info.update(info)
 
@@ -1210,6 +1299,7 @@ def _embed_ot_graph(
     init_scale: float,
     init,
     init_info: dict[str, object],
+    init_label: str | np.ndarray | None = None,
     cross_batch_only: bool = False,
     knn_indices: np.ndarray | None = None,
     timer: object | None = None,
@@ -1221,6 +1311,8 @@ def _embed_ot_graph(
     UMAP uses supplied ``knn_indices`` or derives them from ``four_block_matrix``;
     ``cross_batch_only`` restricts that derivation to opposite-batch neighbors.
     Its fuzzy union preserves edge support, while t-SNE receives normalized affinities.
+    ``init_label`` is the caller's ``init`` before plan coordinates replaced it, so a
+    resolved ``"eot"`` is recorded as ``"eot"`` rather than ``"array"``.
     """
     if backend == "tsne":
         embedding = run_tsne_from_graph(
@@ -1233,6 +1325,8 @@ def _embed_ot_graph(
             timer=timer,
             n_jobs=n_jobs,
             early_exaggeration_iter=early_exaggeration_iter,
+            pca_input=x_joint,
+            init_label=init_label if isinstance(init_label, str) else None,
         )
         return embedding, {"embedding_backend": "tsne"}
     # early_exaggeration_iter is a t-SNE parameter; UMAP has no such phase and ignores it.

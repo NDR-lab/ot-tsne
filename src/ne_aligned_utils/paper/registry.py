@@ -230,7 +230,7 @@ def method_order(keys=None) -> list[str]:
 METRICS: dict[str, str] = {
     "purity": "Neighborhood purity",
     "kbet": "kBET",
-    "silhouette": "Silhouette (ASW)",
+    "silhouette": "Silhouette",
     "ilisi": "iLISI",
 }
 

@@ -423,8 +423,11 @@ def main(argv: list[str] | None = None) -> None:
         raw_dir / name for name in spec.source_files if not (raw_dir / name).is_file()
     ]
     if missing_sources:
-        raise FileNotFoundError(
-            "Missing raw source file(s): " + ", ".join(str(path) for path in missing_sources)
+        # A short message, not a traceback: a missing download is not a bug.
+        raise SystemExit(
+            f"[{args.dataset}] missing raw file(s):\n"
+            + "".join(f"  {path}\n" for path in missing_sources)
+            + "See 'Obtain the data' in reproduction/README.md for where to get them."
         )
     if args.check_only:
         print(f"[{args.dataset}] raw sources available under {raw_dir}")

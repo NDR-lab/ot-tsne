@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -129,11 +130,41 @@ def all_methods(
     figsize: tuple[float, float],
     device_marks: tuple[str, str],
     gpu_medians: pd.DataFrame | None = None,
+    extra_rows: Mapping[str, tuple[str, str]] | None = None,
+    relabel: Mapping[str, str] | None = None,
 ) -> Figure:
     """Per-dataset median runtimes, one panel per method family, rows as given.
 
     GPU readings, when supplied, share the dataset glyph and row of their CPU reading.
+    ``extra_rows`` maps an added row's key to ``(anchor key, row label)``: the row is drawn
+    directly under its anchor, in the anchor's panel, from the ``medians`` rows with that key.
+    ``relabel`` overrides row labels by key.
     """
+    extra_rows = dict(extra_rows or {})
+    if relabel:
+        render_context = replace(
+            render_context, method_labels={**render_context.method_labels, **relabel}
+        )
+    if extra_rows:
+        method_order = {
+            family: [
+                k
+                for key in keys
+                for k in (key, *[e for e, (anchor, _) in extra_rows.items() if anchor == key])
+            ]
+            for family, keys in method_order.items()
+        }
+        placed = {k for keys in method_order.values() for k in keys}
+        missing = sorted(set(extra_rows) - placed)
+        if missing:
+            raise KeyError(f"extra rows whose anchor is in no panel: {missing}")
+        render_context = replace(
+            render_context,
+            method_labels={
+                **render_context.method_labels,
+                **{key: label for key, (_, label) in extra_rows.items()},
+            },
+        )
     ordered = datasets
     offsets = runtime_drawing.dataset_offsets(ordered, row_spread=style.row_spread)
     labels = [
@@ -146,10 +177,9 @@ def all_methods(
         labels, figsize, style=style
     )
 
-    families = render_context.families
     family_order = render_context.family_order
     markers = render_context.dataset_markers
-    counts = [len(families[family]) for family in family_order]
+    counts = [len(method_order[family]) for family in family_order]
     fig, axes = runtime_drawing.family_axes(counts, legend_fraction, figsize)
 
     lookup = {
@@ -266,6 +296,67 @@ def all_methods(
         else "",
     )
     return fig
+
+
+def write_runtime_comparison(
+    frame: pd.DataFrame,
+    extra: pd.DataFrame,
+    *,
+    output_dir: Path,
+    datasets: tuple[str, ...],
+    name: str,
+    extra_label: str,
+    anchor: str = "ot",
+    extra_key: str | None = None,
+    anchor_label: str | None = None,
+) -> dict[str, Path]:
+    """``runtime_all_methods`` with one added row: ``extra``'s ``anchor`` runs, under ``anchor``.
+
+    ``frame`` gives every row as in :func:`write_runtime_figures`; ``extra`` is a second timing
+    frame (e.g. another results root) whose ``anchor`` rows are drawn as the added row, labelled
+    ``extra_label``; ``anchor_label`` renames the anchor's own row. Rows are ordered by ``frame``
+    alone, and the x axis encloses both. Writes ``<name>.png`` and ``<name>-medians.csv`` (the
+    added row's medians next to the anchor's).
+    """
+    target = Path(output_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    extra_key = extra_key or f"{anchor}--extra"
+    context = presentation.runtime_render_context()
+    style = presentation.runtime_figure_style()
+    base = summaries.annotate(frame, context=context)
+    added = summaries.annotate(extra.loc[extra["method_key"] == anchor], context=context)
+    if added.empty:
+        raise ValueError(f"the extra frame has no {anchor!r} rows")
+    inputs = summaries.panel_inputs(base, datasets=datasets, context=context)
+    added_medians = summaries.dataset_medians(added, context=context).assign(
+        method_key=extra_key, method_label=extra_label
+    )
+    medians = pd.concat([inputs["medians"], added_medians], ignore_index=True)
+    inputs["medians"] = medians
+    inputs["xlim"] = runtime_drawing.axis_limits(medians, phase_families=style.phase_families)
+    # One more row at the same row pitch.
+    n_rows = sum(len(keys) for keys in inputs["method_order"].values())
+    width, height = presentation.FIGURE_ONE_SIZE
+    figsize = (width, height * (n_rows + 1) / n_rows)
+    with layout.paper_style():
+        figure = all_methods(
+            **inputs,
+            render_context=context,
+            style=style,
+            device_marks=presentation.DEVICE_MARKS_LETTERS,
+            figsize=figsize,
+            extra_rows={extra_key: (anchor, extra_label)},
+            relabel={anchor: anchor_label} if anchor_label else None,
+        )
+        png = layout.save_figure(
+            figure, name, subdir=target.name, root=target.parent, formats=("png",)
+        )
+    table = medians.loc[medians["method_key"].isin([anchor, extra_key])].sort_values(
+        ["dataset", "method_key"]
+    )
+    csv = target / f"{name}-medians.csv"
+    table.to_csv(csv, index=False)
+    return {name: png, f"{name}-medians.csv": csv}
 
 
 def captions(frame: pd.DataFrame, *, context: RuntimeRenderContext) -> dict[str, str]:

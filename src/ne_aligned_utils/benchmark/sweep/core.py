@@ -62,10 +62,15 @@ from ne_aligned_utils.benchmark.sweep.tasks import (  # noqa: E402, F401
 from ne_aligned_utils.config import (  # noqa: E402
     BACKENDS,
     DEFAULT_BACKEND,
+    DEFAULT_INIT_JITTER,
+    DEFAULT_LIGER_N_CORES,
     DEFAULT_MULTIMAP_NATIVE_PROFILE,
+    DEFAULT_OT_SVD_DIRECTIONS,
+    DEFAULT_OT_SVD_SOLVER,
     DEFAULT_RC_TSNE_BETA,
     DEFAULT_UMAP_N_NEIGHBORS,
     NO_BACKEND,
+    OT_SVD_SOLVERS,
     ROOT,
     SUPPORTED_DATASETS,
 )
@@ -142,6 +147,14 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     from ne_aligned_utils.methods import OT_TSNE_INIT_CHOICES
 
     parser.add_argument("--init", choices=list(OT_TSNE_INIT_CHOICES), default="random")
+    # Seeded jitter on non-random inits, as a fraction of the first axis's SD; 0 turns it off,
+    # so every seed gets the same init coordinates.
+    parser.add_argument("--init-jitter", type=float, default=DEFAULT_INIT_JITTER)
+    # The plan SVD behind OT-tSNE's spectral within-batch blocks (task kind ot only).
+    parser.add_argument("--svd-solver", choices=list(OT_SVD_SOLVERS), default=DEFAULT_OT_SVD_SOLVER)
+    parser.add_argument("--svd-directions", type=int, default=DEFAULT_OT_SVD_DIRECTIONS)
+    # Cores for LIGER's iNMF (task kinds liger-2d and liger-50); rliger's default is 2.
+    parser.add_argument("--liger-n-cores", type=int, default=DEFAULT_LIGER_N_CORES)
 
 
 def add_sweep_options(parser: argparse.ArgumentParser) -> None:
@@ -171,6 +184,8 @@ def parse_args() -> argparse.Namespace:
     task_parser.add_argument("--rel-reg", type=float, default=None)
     task_parser.add_argument("--effective-k", type=int, default=None)
     task_parser.add_argument("--force", action="store_true")
+    # Share the OT plan and its SVD between ot tasks that differ only in k or seed.
+    task_parser.add_argument("--ot-cache-dir", type=Path, default=None)
 
     aggregate_parser = subparsers.add_parser("aggregate")
     add_common_options(aggregate_parser)
@@ -205,6 +220,8 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         parser.error("--n-epochs must be positive.")
     if getattr(args, "tsne_early_exaggeration_iter", 0) < 0:
         parser.error("--tsne-early-exaggeration-iter must be non-negative.")
+    if not 0.0 <= getattr(args, "init_jitter", 0.0) < float("inf"):
+        parser.error("--init-jitter must be finite and non-negative.")
     if hasattr(args, "pca_components") and args.pca_components <= 0:
         parser.error("--pca-components must be positive.")
     if hasattr(args, "perplexity") and args.perplexity <= 0:
@@ -290,6 +307,15 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
                 f"({effective_k}) for UMAP runs."
             )
         args.n_neighbors = effective_k
+    if getattr(args, "svd_directions", 1) < 1:
+        parser.error("--svd-directions must be a positive integer.")
+    if getattr(args, "liger_n_cores", 1) < 1:
+        parser.error("--liger-n-cores must be a positive integer.")
+    if getattr(args, "ot_cache_dir", None) is not None:
+        if getattr(args, "task_kind", None) != "ot":
+            parser.error("--ot-cache-dir is only supported for --task-kind ot.")
+        if getattr(args, "reuse_from", None) is not None:
+            parser.error("--ot-cache-dir and --reuse-from cannot be combined.")
     if getattr(args, "task_kind", None) in OT_PLAN_METHODS and args.rel_reg is None:
         parser.error("--rel-reg is required for OT-related run-task commands.")
     if getattr(args, "task_kind", None) in EPS_K_METHODS and args.effective_k is None:

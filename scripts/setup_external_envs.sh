@@ -95,13 +95,23 @@ export MAMBA_ROOT_PREFIX="${mamba_root}"
 
 platform=$(micromamba_platform)
 
+# An environment counts as installed only if its key file exists. One left half-built by an
+# interrupted run is removed and created again.
 create_mamba_env() {
   local name=$1
   local specification=$2
+  local key_file=$3
+  local prefix="${mamba_root}/envs/${name}"
   local lock="envs/${platform}/${name}.lock"
-  if [[ -f "${mamba_root}/envs/${name}/conda-meta/history" ]]; then
+  if [[ -e "${prefix}/${key_file}" ]]; then
     echo "Using existing ${name} as it is (not updated in place)"
-  elif [[ -f "${lock}" ]]; then
+    return
+  fi
+  if [[ -d "${prefix}" ]]; then
+    echo "${name} at ${prefix} is incomplete (no ${key_file}); creating it again"
+    rm -rf -- "${prefix}"
+  fi
+  if [[ -f "${lock}" ]]; then
     echo "Creating ${name} from the exact package list ${lock}"
     "${micromamba}" create -y -n "${name}" --file "${lock}"
   else
@@ -110,13 +120,13 @@ create_mamba_env() {
   fi
 }
 
-create_mamba_env rverify envs/r/environment.yml
+create_mamba_env rverify envs/r/environment.yml bin/Rscript
 bash envs/r/install-cran-extras.sh
 
-create_mamba_env liger2 envs/liger/environment.yml
+create_mamba_env liger2 envs/liger/environment.yml bin/Rscript
 bash envs/liger/install-cran-extras.sh
 
-create_mamba_env rctsne envs/rctsne/environment.yml
+create_mamba_env rctsne envs/rctsne/environment.yml include/fftw3.h
 bash scripts/setup/build_rctsne.sh
 
 # MultiMAP is its own uv project (envs/multimap/pyproject.toml, uv.lock, .python-version).

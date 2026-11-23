@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -895,7 +896,7 @@ def mechanism_panels(
     *,
     letters=("B", "C"),
     ncol=1,
-    titles=("Directed graph purity", "Symmetrized graph purity"),
+    titles=("Directed graph purity", "Cross-batch graph purity"),
     title_pt=None,
     directed_panel=True,
     legend_outside=False,
@@ -978,7 +979,7 @@ def mechanism_panels(
     table = add_curve(
         ax_c,
         directed,
-        "eot_shared_or_digit_purity",
+        "eot_shared_or_symmetric_digit_purity",
         label="Sparse OT",
         color=ot.color,
         marker=ot.marker,
@@ -987,7 +988,7 @@ def mechanism_panels(
     add_curve(
         ax_c,
         knn,
-        "shared_correct_class_neighbor_fraction",
+        "shared_symmetric_correct_class_neighbor_fraction",
         label="Shared kNN",
         color=dark,
         marker="o",
@@ -996,7 +997,7 @@ def mechanism_panels(
     add_curve(
         ax_c,
         knn,
-        "mutual_correct_class_neighbor_fraction",
+        "mutual_symmetric_correct_class_neighbor_fraction",
         label="Mutual kNN",
         color=light,
         marker="o",
@@ -1421,6 +1422,13 @@ def build_variant(
     prepared: synthetic.SyntheticRuns | None = None,
 ) -> list[Path]:
     runs = prepared or synthetic.preflight(variant, source_root=source_root, output_dir=output_dir)
+    runs = synthetic.with_symmetric_graph_purity(runs)
+    # Zero calibrates regularization and supplies reference plans; it is not a sweep point.
+    runs = replace(runs,
+        configs={mode: {**config, "magnitudes": [x for x in config["magnitudes"] if x > 0]}
+                 for mode, config in runs.configs.items()},
+        knn=runs.knn.loc[runs.knn.magnitude > 0],
+        summary=runs.summary.loc[runs.summary.magnitude > 0])
     output_dir.mkdir(parents=True, exist_ok=True)
     clean0, labels0, clean1, labels1, pca = load_mnist_and_pca(
         runs.configs["original"], source_root=source_root
@@ -1472,7 +1480,7 @@ def build_variant(
         directed,
         letters=("C", "D"),
         ncol=NARROW_LEGEND_NCOL,
-        titles=("Directed graph purity", "Symmetrized graph purity"),
+        titles=("Directed graph purity", "Cross-batch graph purity"),
     )
     downstream_panels(alt, (grid[1, 2], grid[1, 3]), runs, letters=("E", "F"))
     # Use compact magnitude-axis labels; define lambda in the caption.

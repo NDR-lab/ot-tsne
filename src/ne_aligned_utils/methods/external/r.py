@@ -19,6 +19,7 @@ import numpy as np
 
 from ne_aligned_utils.config import (
     DEFAULT_BACKEND,
+    DEFAULT_LIGER_N_CORES,
     DEFAULT_LIGER_PRESELECTED_FEATURES,
     DEFAULT_SEURAT_PRESELECTED_FEATURES,
     DEFAULT_SEURAT_WORKFLOW,
@@ -53,7 +54,7 @@ _NO_LAUNCHER_HELP = f"""{RSCRIPT_ENV_VAR} is not set, so no R launcher has been 
   To use the Rscript already on PATH, ask for it explicitly:
     export {RSCRIPT_ENV_VAR}=Rscript
 
-  See reproduction/README.md and src/ne_aligned_utils/methods/external/r_scripts/README.md."""
+  See reproduction/README.md and src/ne_aligned_utils/methods/external/README.md."""
 
 
 def rscript_command(env_var: str = RSCRIPT_ENV_VAR) -> list[str]:
@@ -587,6 +588,12 @@ def compute_liger1_then_tsne_embedding_from_arrays(
     return embedding, artifacts
 
 
+def _validate_n_cores(n_cores: int) -> int:
+    if isinstance(n_cores, bool) or int(n_cores) != n_cores or int(n_cores) < 1:
+        raise ValueError(f"n_cores must be a positive integer, got {n_cores!r}.")
+    return int(n_cores)
+
+
 def compute_liger_embedding_from_arrays(
     x0: np.ndarray,
     x1: np.ndarray,
@@ -597,6 +604,7 @@ def compute_liger_embedding_from_arrays(
     preselected_features: bool = DEFAULT_LIGER_PRESELECTED_FEATURES,
     requested_features: int | None = None,
     library_sizes: np.ndarray | None = None,
+    n_cores: int = DEFAULT_LIGER_N_CORES,
 ) -> np.ndarray | tuple[np.ndarray, dict[str, object]]:
     """Current LIGER iNMF followed by its default quantile alignment.
 
@@ -609,6 +617,7 @@ def compute_liger_embedding_from_arrays(
         raise ValueError("requested_features must be a positive integer or None")
     if preselected_features and requested_features is not None:
         raise ValueError("preselected_features and requested_features cannot both be set")
+    n_cores = _validate_n_cores(n_cores)
     representation, r_artifacts, n0 = _run_r_integration(
         "liger.R",
         "liger",
@@ -619,6 +628,7 @@ def compute_liger_embedding_from_arrays(
         extra_params={
             "preselected_features": bool(preselected_features),
             "requested_features": 0 if requested_features is None else int(requested_features),
+            "n_cores": n_cores,
         },
         timer=timer,
         launcher_env_var=LIGER_RSCRIPT_ENV_VAR,
@@ -640,6 +650,7 @@ def compute_liger_embedding_from_arrays(
         "requested_features": requested_features,
         "selected_features": None if selected_match is None else int(selected_match.group(1)),
         "alignment": "quantileNorm",
+        "n_cores": n_cores,
         "random_state": int(random_state),
     }
 
@@ -660,12 +671,14 @@ def compute_liger_then_tsne_embedding_from_arrays(
     preselected_features: bool = DEFAULT_LIGER_PRESELECTED_FEATURES,
     requested_features: int | None = None,
     library_sizes: np.ndarray | None = None,
+    n_cores: int = DEFAULT_LIGER_N_CORES,
 ) -> np.ndarray | tuple[np.ndarray, dict[str, object]]:
     """Current LIGER to ``liger_dim`` factors, followed by the shared 2D backend."""
     if requested_features is not None and int(requested_features) < 1:
         raise ValueError("requested_features must be a positive integer or None")
     if preselected_features and requested_features is not None:
         raise ValueError("preselected_features and requested_features cannot both be set")
+    n_cores = _validate_n_cores(n_cores)
     result = _r_integration_then_tsne(
         "liger.R",
         "liger",
@@ -685,6 +698,7 @@ def compute_liger_then_tsne_embedding_from_arrays(
             "preselected_features": bool(preselected_features),
             "requested_features": 0 if requested_features is None else int(requested_features),
             "alignment": "quantileNorm",
+            "n_cores": n_cores,
         },
         timer=timer,
         launcher_env_var=LIGER_RSCRIPT_ENV_VAR,

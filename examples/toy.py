@@ -18,8 +18,8 @@ def main():
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(__file__).resolve().parents[1] / "figures" / "toy_embedding.png",
-        help="Path for the resulting figure (default: figures/toy_embedding.png).",
+        default=Path(__file__).resolve().parents[1] / "results" / "examples" / "toy_embedding.png",
+        help="Path for the resulting figure (default: results/examples/toy_embedding.png).",
     )
     args = parser.parse_args()
 
@@ -44,6 +44,7 @@ def main():
         x1,
         rel_reg=1.0,
         effective_k=15,
+        init="eot",
         random_state=0,
         n_jobs=4,
     )

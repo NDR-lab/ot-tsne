@@ -5,11 +5,11 @@ values computed under a different definition.
 """
 
 import numpy as np
-from scipy.sparse import coo_matrix
 from scipy.stats import chi2
 from sklearn.cluster import KMeans
 from sklearn.metrics import adjusted_rand_score, silhouette_samples
 from sklearn.neighbors import NearestNeighbors
+
 
 def _validate_positive_integer(value, name):
     if isinstance(value, (bool, np.bool_)) or not np.isscalar(value):
@@ -518,114 +518,6 @@ def compute_knn_other_batch_fraction(
         return float("nan")
 
     return float(np.mean(shared_label_scores))
-
-
-def intersection_over_union(graphs):
-    """Return mean row-wise intersection over union for two sparse adjacency matrices."""
-    assert len(graphs) == 2, "Only two graphs supported"
-    intersection = graphs[0].multiply(graphs[1])
-    intersection = np.array(intersection.sum(1)).flatten()
-
-    union = graphs[0].maximum(graphs[1])
-    union = np.array(union.sum(1)).flatten()
-    union[union == 0] = 1  # avoid division by zero
-
-    iou = intersection / union
-    return iou.mean()
-
-
-def compute_concordance(x, y, k=50):
-    """Return mean neighbor-set Jaccard similarity between matched rows of ``x`` and ``y``.
-
-    Coordinates may have different dimensions; rows must identify the same samples.
-    """
-    assert x.shape[0] == y.shape[0], "x and y must have the same number of points"
-    nbrs_x = NearestNeighbors(n_neighbors=k, algorithm="auto").fit(x)
-    _, indices_x = nbrs_x.kneighbors(x)
-    nbrs_y = NearestNeighbors(n_neighbors=k, algorithm="auto").fit(y)
-    _, indices_y = nbrs_y.kneighbors(y)
-
-    n = x.shape[0]
-    data = np.ones(n * k)
-    knn_graphs = []
-    rows = np.arange(n).repeat(k)
-    for indices in [indices_x, indices_y]:
-        cols = indices.flatten()
-        knn_graphs.append(coo_matrix((data, (rows, cols)), shape=(n, n)))
-
-    return intersection_over_union(knn_graphs)
-
-
-def compute_cross_concordance(x0, x1, y0, y1, k=50):
-    """Return symmetric cross-batch neighbor-set Jaccard similarity.
-
-    ``x0`` and ``x1`` are reference coordinates; ``y0`` and ``y1`` contain the same
-    samples in embedding space. Compare top-k opposite-batch neighbors in both directions.
-    """
-    assert x0.shape[0] == y0.shape[0], (
-        f"x0 and y0 must have the same number of points, but have {x0.shape[0]} and {y0.shape[0]}"
-    )
-    assert x1.shape[0] == y1.shape[0], (
-        f"x1 and y1 must have the same number of points, but have {x1.shape[0]} and {y1.shape[0]}"
-    )
-    assert x0.shape[1] == x1.shape[1], (
-        f"x0 and x1 must have the same number of dimensions, but have {x0.shape[1]} and {x1.shape[1]}"
-    )
-    assert y0.shape[1] == y1.shape[1], (
-        f"y0 and y1 must have the same number of dimensions, but have {y0.shape[1]} and {y1.shape[1]}"
-    )
-
-    n0 = x0.shape[0]
-    n1 = x1.shape[0]
-
-    nbrs_x0 = NearestNeighbors(n_neighbors=k, algorithm="auto").fit(x1)
-    _, indices_x0 = nbrs_x0.kneighbors(x0)
-
-    nbrs_x1 = NearestNeighbors(n_neighbors=k, algorithm="auto").fit(x0)
-    _, indices_x1 = nbrs_x1.kneighbors(x1)
-
-    indices_x = np.concatenate((indices_x0 + n0, indices_x1), axis=0)
-
-    nbrs_y0 = NearestNeighbors(n_neighbors=k, algorithm="auto").fit(y1)
-    _, indices_y0 = nbrs_y0.kneighbors(y0)
-
-    nbrs_y1 = NearestNeighbors(n_neighbors=k, algorithm="auto").fit(y0)
-    _, indices_y1 = nbrs_y1.kneighbors(y1)
-
-    indices_y = np.concatenate((indices_y0 + n0, indices_y1), axis=0)
-
-    data = np.ones(n0 * k + n1 * k)
-
-    knn_graphs = []
-    rows = np.concatenate([np.arange(n0).repeat(k), np.arange(n1).repeat(k) + n0])
-    for indices in [indices_x, indices_y]:
-        cols = indices.flatten()
-        knn_graphs.append(coo_matrix((data, (rows, cols)), shape=(n0 + n1, n0 + n1)))
-
-    return intersection_over_union(knn_graphs)
-
-
-def compute_foscttm(x0_ref, x1_ref, y0, y1):
-    """Return symmetric fraction of samples closer than the reference-defined match.
-
-    Nearest opposite-batch neighbors in ``x0_ref``/``x1_ref`` define matches. Measure
-    the fraction strictly closer in ``y0``/``y1`` and average both directions.
-    Lower values indicate better match preservation.
-    """
-
-    scores = []
-    for xa, xb, ya, yb in [(x0_ref, x1_ref, y0, y1), (x1_ref, x0_ref, y1, y0)]:
-        nn = NearestNeighbors(n_neighbors=1, algorithm="auto").fit(xb)
-        true_idx = nn.kneighbors(xa, return_distance=False).flatten()
-
-        dist_to_match = np.linalg.norm(ya - yb[true_idx], axis=1)
-        dists = np.linalg.norm(ya[:, None, :] - yb[None, :, :], axis=-1)
-
-        denom = max(yb.shape[0] - 1, 1)
-        frac = (dists < dist_to_match[:, None]).sum(axis=1) / denom
-        scores.append(frac.mean())
-
-    return float(np.mean(scores))
 
 
 def compute_rand_index(labels_true, labels_pred):

@@ -61,6 +61,8 @@ def main(argv=None):
             )
         else:
             inputs.add(args.run_root / "config.json")
+            inputs.update((args.run_root / "ablation/symmetric_graph_purity").glob("*.csv"))
+            inputs.add(args.run_root / "ablation/symmetric_graph_purity/config.json")
     inputs.update(
         path
         for path in (synthetic.mnist_directory(source) / "MNIST/raw").iterdir()
@@ -95,6 +97,7 @@ def main(argv=None):
         "outputs": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in paths},
         "reconstruction": "MNIST split and PCA reconstructed from the recorded configuration",
         "methods_executed": [],
+        "graph_purity": "equal-batch average of unweighted per-node purity; isolated nodes excluded within each batch",
     }
     (output / "source_runs.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     print(f"wrote {len(paths)} figures and source_runs.json under {output}")

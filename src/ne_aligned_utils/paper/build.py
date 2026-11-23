@@ -23,12 +23,16 @@ from ne_aligned_utils import config
 from ne_aligned_utils.analysis import cell_type_palette
 from ne_aligned_utils.paper import layout, registry
 from ne_aligned_utils.paper.figures import benchmark as benchmark_figures, composition, runtime
-from ne_aligned_utils.paper.figures.qualitative import GalleryBlock
+from ne_aligned_utils.paper.figures.qualitative import GalleryBlock, SeedGallery
 from ne_aligned_utils.paper.inputs import runtime as runtime_inputs
 from ne_aligned_utils.paper.inputs.current import CANONICAL_DATASETS, load_canonical_frame
-from ne_aligned_utils.paper.inputs.embeddings import load_reported_embedding
+from ne_aligned_utils.paper.inputs.embeddings import load_reported_embedding, load_seed_embeddings
 from ne_aligned_utils.paper.rendering import presentation, styles
-from ne_aligned_utils.paper.selection.benchmark import CURRENT_BENCHMARK, reported_metric_rows
+from ne_aligned_utils.paper.selection.benchmark import (
+    CURRENT_BENCHMARK,
+    BenchmarkSelectionPolicy,
+    reported_metric_rows,
+)
 from ne_aligned_utils.paper.summaries import ranks as scoring
 from ne_aligned_utils.paper.summaries.metrics import pool_datasets, summarise_seeds
 
@@ -77,7 +81,12 @@ class PreparedFigures:
     ranks: dict[str, pd.DataFrame] = field(default_factory=dict)
     top_counts: dict[tuple[str, int], pd.DataFrame] = field(default_factory=dict)
     galleries: dict[str, GalleryBlock] = field(default_factory=dict)
+    #: dataset -> every seed of the benchmark columns, and of the OT-tSNE variants.
+    seed_galleries: dict[str, SeedGallery] = field(default_factory=dict)
+    ot_seed_galleries: dict[str, SeedGallery] = field(default_factory=dict)
     compositions: list[composition.CompositionBlock] = field(default_factory=list)
+    #: The one configuration every figure shows (rel_reg, k, symmetrisation, backend, device).
+    policy: BenchmarkSelectionPolicy = CURRENT_BENCHMARK
 
 
 def _check_paths(root: Path, output: Path, datasets, supplementary: Path | None) -> None:
@@ -97,9 +106,9 @@ def _check_paths(root: Path, output: Path, datasets, supplementary: Path | None)
         raise FileExistsError(f"output must be new or empty: {output}")
 
 
-def _gallery(frame: pd.DataFrame, dataset: str) -> GalleryBlock:
+def _gallery(frame: pd.DataFrame, dataset: str, *, rel_reg: float) -> GalleryBlock:
     cached = {
-        key: load_reported_embedding(frame, dataset, key, rel_reg=CURRENT_BENCHMARK.rel_reg)
+        key: load_reported_embedding(frame, dataset, key, rel_reg=rel_reg)
         for key, _heading in styles.QUALITATIVE_COLUMNS
     }
     first = cached[styles.QUALITATIVE_COLUMNS[0][0]][1]
@@ -115,9 +124,29 @@ def _gallery(frame: pd.DataFrame, dataset: str) -> GalleryBlock:
     )
 
 
-def _joint_cache(frame: pd.DataFrame, dataset: str):
+def _seed_gallery(frame: pd.DataFrame, dataset: str, columns, *, rel_reg: float) -> SeedGallery:
+    """Every seed of ``columns`` on ``dataset``; all methods must hold the same seeds."""
+    keys = [key for key, _heading in columns]
+    rows = frame[(frame["dataset"] == dataset) & frame["method_key"].isin(keys)]
+    held = {key: frozenset(rows.loc[rows["method_key"] == key, "seed"]) for key in keys}
+    if len(set(held.values())) != 1 or not next(iter(held.values())):
+        raise ValueError(f"{dataset}: methods hold different seeds {held}")
+    seeds = tuple(sorted(int(seed) for seed in next(iter(held.values()))))
+    loaded = {
+        key: load_seed_embeddings(frame, dataset, key, rel_reg=rel_reg, seeds=seeds) for key in keys
+    }
+    first = loaded[keys[0]][1]
+    return SeedGallery(
+        name=registry.DATASET_LABELS.get(dataset, dataset),
+        embeddings={seed: {key: loaded[key][0][seed] for key in keys} for seed in seeds},
+        caches={key: loaded[key][1] for key in keys},
+        palette=cell_type_palette(tuple(str(value) for value in first["label_names"])),
+    )
+
+
+def _joint_cache(frame: pd.DataFrame, dataset: str, *, rel_reg: float):
     """The joint t-SNE aggregate cache: labels and batches as every method received them."""
-    return load_reported_embedding(frame, dataset, "joint", rel_reg=CURRENT_BENCHMARK.rel_reg)[1]
+    return load_reported_embedding(frame, dataset, "joint", rel_reg=rel_reg)[1]
 
 
 def preflight(
@@ -128,8 +157,14 @@ def preflight(
     families: tuple[str, ...] = FAMILIES,
     supplementary_root: Path | None = None,
     top_r: tuple[int, ...] = DEFAULT_TOP_R,
+    policy: BenchmarkSelectionPolicy = CURRENT_BENCHMARK,
 ) -> PreparedFigures:
-    """Validate all requested inputs before creating output or rendering anything."""
+    """Validate all requested inputs before creating output or rendering anything.
+
+    ``policy`` is the one configuration the figures show: by default the reported benchmark
+    (rel_reg 1, k 15, "or" symmetrisation, t-SNE, CPU). Another value builds the same figure set
+    for, say, k 30, from a results root that holds it.
+    """
     root, output = Path(root).resolve(), Path(output).resolve()
     if not datasets or len(set(datasets)) != len(datasets):
         raise ValueError("datasets must be non-empty and unique")
@@ -152,45 +187,67 @@ def preflight(
         datasets=datasets,
         supplementary_root=supplementary,
         require_source_caches=needs_caches,
+        policy=policy,
     )
     prepared: dict = {}
     if "metrics" in families:
         selected = reported_metric_rows(
             frame,
-            backend=CURRENT_BENCHMARK.backend,
+            backend=policy.backend,
             no_backend=config.NO_BACKEND,
-            rel_reg=CURRENT_BENCHMARK.rel_reg,
-            effective_k=CURRENT_BENCHMARK.effective_k,
+            rel_reg=policy.rel_reg,
+            effective_k=policy.effective_k,
         )
         prepared["summary"] = summarise_seeds(selected, metrics=list(registry.METRICS))
         prepared["pooled"] = pool_datasets(prepared["summary"], datasets=pool)
     if "runtime" in families:
         prepared["timing"] = runtime_inputs.load_runtime_frame(
-            root, datasets=datasets, supplementary_root=supplementary
+            root, datasets=datasets, supplementary_root=supplementary, policy=policy
         )
-        prepared["gpu_medians"] = runtime_inputs.load_gpu_medians(root, supplementary)
+        prepared["gpu_medians"] = runtime_inputs.load_gpu_medians(
+            root, supplementary, policy=policy
+        )
     if "ranks" in families:
         prepared["ranks"] = {
             normalization: scoring.aggregate_ranks(
-                frame, datasets=pool, normalization=normalization, rel_reg=CURRENT_BENCHMARK.rel_reg
+                frame,
+                datasets=pool,
+                normalization=normalization,
+                rel_reg=policy.rel_reg,
+                effective_k=policy.effective_k,
             )
             for normalization in scoring.NORMALIZATIONS
         }
         prepared["top_counts"] = {
             (normalization, int(r)): scoring.top_k(
-                frame, datasets=pool, normalization=normalization, k=int(r)
+                frame,
+                datasets=pool,
+                normalization=normalization,
+                k=int(r),
+                rel_reg=policy.rel_reg,
+                effective_k=policy.effective_k,
             )
             for normalization in scoring.NORMALIZATIONS
             for r in top_r
         }
     if "qualitative" in families:
-        prepared["galleries"] = {dataset: _gallery(frame, dataset) for dataset in datasets}
+        prepared["galleries"] = {
+            dataset: _gallery(frame, dataset, rel_reg=policy.rel_reg) for dataset in datasets
+        }
+        for name, columns in (
+            ("seed_galleries", styles.QUALITATIVE_COLUMNS),
+            ("ot_seed_galleries", styles.OT_SEED_COLUMNS),
+        ):
+            prepared[name] = {
+                dataset: _seed_gallery(frame, dataset, columns, rel_reg=policy.rel_reg)
+                for dataset in datasets
+            }
     if "composition" in families:
         prepared["compositions"] = [
             composition.composition_block(
                 dataset,
                 registry.DATASET_LABELS.get(dataset, dataset),
-                _joint_cache(frame, dataset),
+                _joint_cache(frame, dataset, rel_reg=policy.rel_reg),
             )
             for dataset in pool
         ]
@@ -221,6 +278,7 @@ def preflight(
         top_r=tuple(int(r) for r in top_r),
         frame=frame,
         input_hashes=hashes,
+        policy=policy,
         **prepared,
     )
 
@@ -272,6 +330,22 @@ def _qualitative(prepared: PreparedFigures, target: Path) -> None:
         layout.save_figure(
             fig, f"embeddings-{dataset}", kind="density", subdir="qualitative", root=target
         )
+    for prefix, galleries, columns, groups in (
+        (
+            "embeddings-seeds",
+            prepared.seed_galleries,
+            styles.QUALITATIVE_COLUMNS,
+            styles.QUALITATIVE_GROUPS,
+        ),
+        ("embeddings-ot-seeds", prepared.ot_seed_galleries, styles.OT_SEED_COLUMNS, None),
+    ):
+        for dataset, gallery in galleries.items():
+            fig = composer.seed_panels(
+                gallery.cached(), gallery.palette, columns=columns, groups=groups
+            )
+            layout.save_figure(
+                fig, f"{prefix}-{dataset}", kind="density", subdir="qualitative", root=target
+            )
     stacked = [
         prepared.galleries[d] for d in styles.STACKED_GALLERY_DATASETS if d in prepared.galleries
     ]
@@ -347,7 +421,7 @@ def build(prepared: PreparedFigures) -> Path:
                     record["dimensions_px"] = list(image.size)
                     record["dpi"] = list(image.info.get("dpi", ()))
             outputs[str(path.relative_to(target))] = record
-        policy = CURRENT_BENCHMARK
+        policy = prepared.policy
         manifest = dict(
             schema_version=2,
             datasets=list(prepared.datasets),
@@ -361,7 +435,12 @@ def build(prepared: PreparedFigures) -> Path:
                 else None
             ),
             configuration=dict(
-                rel_reg=policy.rel_reg, effective_k=policy.effective_k, backend=policy.backend
+                name=policy.name,
+                rel_reg=policy.rel_reg,
+                effective_k=policy.effective_k,
+                graph_symmetrization=policy.graph_symmetrization,
+                backend=policy.backend,
+                device=policy.device,
             ),
             environment={
                 "python": platform.python_version(),

@@ -12,10 +12,18 @@ from dataclasses import dataclass
 
 import numpy as np
 import scipy.sparse as sp
+from sklearn.utils.extmath import randomized_svd
 
+from ne_aligned_utils.config import (
+    DEFAULT_OT_SVD_DIRECTIONS,
+    DEFAULT_OT_SVD_SOLVER,
+    OT_SVD_FULL_FRACTION,
+    OT_SVD_SOLVERS,
+)
 from ne_aligned_utils.methods.common import validate_batch_sizes as _validate_batch_sizes
 from ne_aligned_utils.methods.ot_graph import (
     DEFAULT_GRAPH_SYMMETRIZATION,
+    SPECTRAL_SOLVER_SEED,
     EffectiveKSplit,
     _mutual_topk_mask,
     _row_or_col_topk_mask,
@@ -24,6 +32,7 @@ from ne_aligned_utils.methods.ot_graph import (
     _topk_scores,
     _validate_symmetrization,
     _variable_topk_mask_along,
+    leading_plan_modes,
     resolve_cross_batch_k,
     resolve_effective_k_split,
 )
@@ -31,6 +40,34 @@ from ne_aligned_utils.methods.ot_graph import (
 #: Budget rules: proportional blocks, mass-aware cross quotas, full cross quotas,
 #: or proportional cross quotas without within-batch edges.
 SELECTION_RULES = ("split", "mass", "cross_only", "cross_split")
+
+
+#: Randomized SVD settings: oversampling and power iterations (Halko et al. 2011, §4.3, §4.5).
+RANDOMIZED_SVD_OVERSAMPLES = 10
+RANDOMIZED_SVD_POWER_ITERATIONS = 7
+
+
+def resolve_plan_svd(
+    solver: str, n_directions: int | None, n0: int, n1: int
+) -> tuple[str, int]:
+    """Return ``(solver actually used, directions computed)`` for an ``n0 x n1`` plan.
+
+    ``"full"`` computes every direction. A truncated solver runs the full SVD instead when
+    asked for ``None`` directions, or for at least ``OT_SVD_FULL_FRACTION`` (half) of the
+    ``min(n0, n1)`` available. There the full SVD is exact and was also faster: at 1000
+    directions randomized SVD broke even with it at a smaller batch of about 2000 cells, and
+    was 3x slower at 1240 (laptop timings, PBMC subsamples and nCoV).
+    """
+    if solver not in OT_SVD_SOLVERS:
+        raise ValueError(f"svd solver must be one of {OT_SVD_SOLVERS}, got {solver!r}.")
+    available = min(int(n0), int(n1))
+    if solver == "full" or n_directions is None:
+        return "full", available
+    if isinstance(n_directions, bool) or int(n_directions) != n_directions or n_directions < 1:
+        raise ValueError(f"svd directions must be a positive integer, got {n_directions!r}.")
+    if int(n_directions) >= OT_SVD_FULL_FRACTION * available:
+        return "full", available
+    return solver, int(n_directions)
 
 
 # Blocks
@@ -50,17 +87,40 @@ class PlanSpectrum:
     eot: np.ndarray
 
     @classmethod
-    def from_plan(cls, plan: np.ndarray) -> PlanSpectrum:
+    def from_plan(
+        cls,
+        plan: np.ndarray,
+        solver: str = DEFAULT_OT_SVD_SOLVER,
+        n_directions: int | None = DEFAULT_OT_SVD_DIRECTIONS,
+    ) -> PlanSpectrum:
         """Use the plan for cross scores and ``source`` for within-batch scores.
 
         ``PlanDiagonals`` requires a matching spectrum. ``WithinBatchKnn`` supplies fixed
         neighbors separately; it and ``None`` provide no within-batch score blocks.
+
+        ``solver`` and ``n_directions`` choose the SVD (see ``resolve_plan_svd``). The
+        truncated solvers keep only the leading directions, so the within-batch blocks
+        change; the randomized one uses a fixed seed, so the spectrum does not depend on
+        the run's seed.
         """
         plan = np.asarray(plan, dtype=float)
         if plan.ndim != 2:
             raise ValueError(f"plan must be a 2D array, got shape {plan.shape!r}.")
         n0, n1 = plan.shape
-        u, singular_values, vt = np.linalg.svd(plan, full_matrices=False)
+        used, q = resolve_plan_svd(solver, n_directions, n0, n1)
+        if used == "arpack":
+            singular_values, eot = leading_plan_modes(plan, n_modes=q)
+            return cls(n0, n1, singular_values, eot)
+        if used == "randomized":
+            u, singular_values, vt = randomized_svd(
+                plan,
+                n_components=q,
+                n_oversamples=RANDOMIZED_SVD_OVERSAMPLES,
+                n_iter=RANDOMIZED_SVD_POWER_ITERATIONS,
+                random_state=SPECTRAL_SOLVER_SEED,
+            )
+        else:
+            u, singular_values, vt = np.linalg.svd(plan, full_matrices=False)
         # Scale directly into the stacked basis to avoid scaled copies of both singular factors.
         eot = np.empty((n0 + n1, singular_values.size), dtype=np.result_type(u, vt))
         np.multiply(u, np.sqrt(n0), out=eot[:n0])

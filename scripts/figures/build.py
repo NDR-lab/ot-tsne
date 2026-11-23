@@ -8,11 +8,29 @@ schematic is built on its own: --families methods --method-arrays <npz> --output
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 from ne_aligned_utils.paper.build import DEFAULT_TOP_R, FAMILIES, build, preflight
 from ne_aligned_utils.paper.figures.methods import build_methods, preflight_methods
 from ne_aligned_utils.paper.inputs.current import CANONICAL_DATASETS
+from ne_aligned_utils.paper.selection.benchmark import (
+    CURRENT_BENCHMARK,
+    BenchmarkSelectionPolicy,
+)
+
+
+def _policy(args) -> BenchmarkSelectionPolicy:
+    """The configuration to show: the reported benchmark unless an option changes it."""
+    chosen = dict(
+        rel_reg=float(args.rel_reg),
+        effective_k=float(args.effective_k),
+        graph_symmetrization=str(args.graph_symmetrization),
+    )
+    if all(getattr(CURRENT_BENCHMARK, key) == value for key, value in chosen.items()):
+        return CURRENT_BENCHMARK
+    name = "rel_reg={rel_reg:g} k={effective_k:g} sym={graph_symmetrization}".format(**chosen)
+    return replace(CURRENT_BENCHMARK, name=name, **chosen)
 
 
 def parse_args(argv=None):
@@ -32,6 +50,24 @@ def parse_args(argv=None):
         type=int,
         default=list(DEFAULT_TOP_R),
         help="write a top-r finishes figure for each r (default: 3 2)",
+    )
+    parser.add_argument(
+        "--rel-reg",
+        type=float,
+        default=CURRENT_BENCHMARK.rel_reg,
+        help=f"OT regularisation the figures show (default {CURRENT_BENCHMARK.rel_reg:g})",
+    )
+    parser.add_argument(
+        "--effective-k",
+        type=float,
+        default=CURRENT_BENCHMARK.effective_k,
+        help=f"OT-tSNE k the figures show (default {CURRENT_BENCHMARK.effective_k:g})",
+    )
+    parser.add_argument(
+        "--graph-symmetrization",
+        choices=("or", "and"),
+        default=CURRENT_BENCHMARK.graph_symmetrization,
+        help="OT-tSNE graph symmetrisation the figures show (default or)",
     )
     parser.add_argument("--method-arrays", type=Path, help="saved methods stages; never recomputed")
     parser.add_argument("--dry-run", action="store_true", help="preflight only; write nothing")
@@ -64,6 +100,7 @@ def main(argv=None):
         families=tuple(args.families),
         supplementary_root=args.supplementary_root,
         top_r=tuple(args.top_r),
+        policy=_policy(args),
     )
     print(
         f"validated {len(prepared.frame)} canonical rows across {len(prepared.datasets)} datasets"

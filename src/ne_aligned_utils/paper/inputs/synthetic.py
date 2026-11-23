@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -308,6 +308,43 @@ def load_joint_embedding(runs: SyntheticRuns, cache_root: Path) -> np.ndarray:
     return load_coordinates(path, 20 * int(runs.configs["original"]["n_per_digit_per_batch"]))
 
 
+def with_symmetric_graph_purity(runs: SyntheticRuns) -> SyntheticRuns:
+    """Attach explicitly saved two-batch graph scores; never infer them from one-sided scores."""
+    roots = {directory.parent for directory in runs.run_dirs.values()}
+    if len(roots) != 1 or any(c.get("schema_version") != 1 for c in runs.configs.values()):
+        raise ValueError("Symmetric graph purity requires a structured run with saved two-batch diagnostics; use --run-root")
+    directory = roots.pop() / "ablation/symmetric_graph_purity"
+    files = ("config.json", "cross_batch_graph_purity_raw.csv", "cross_batch_knn_purity_raw.csv")
+    if any(not (directory / name).is_file() for name in files):
+        raise ValueError(f"Missing symmetric graph-purity diagnostics under {directory}; run the notebook's symmetric graph-purity subsection first")
+    metadata = json.loads((directory / "config.json").read_text())
+    if (metadata.get("aggregation") != "equal_batch_average_of_unweighted_node_purity"
+        or metadata.get("graph") != "union_of_row_and_column_top_k"
+        or metadata.get("k") != 15
+        or not metadata.get("construction_sha256")
+        or any(metadata.get("construction_sha256") != c.get("construction_sha256") for c in runs.configs.values())):
+        raise ValueError(f"Incompatible symmetric graph-purity configuration: {directory}")
+
+    def attach(frame, filename, keys, score_fields):
+        extra = pd.read_csv(directory / filename)
+        _required_columns(extra, set(keys + score_fields), directory / filename)
+        if extra[score_fields].lt(0).any().any() or extra[score_fields].gt(1).any().any():
+            raise ValueError(f"Invalid symmetric graph purity: {directory / filename}")
+        merged = frame.drop(columns=score_fields, errors="ignore").merge(
+            extra[keys + score_fields], on=keys, how="left", validate="one_to_one", indicator=True
+        )
+        if not merged._merge.eq("both").all():
+            raise ValueError(f"Incomplete symmetric graph purity: {directory / filename}")
+        return merged.drop(columns="_merge")
+
+    affinity = attach(runs.affinity, files[1],
+        ["mode", "magnitude", "corruption_seed", "rel_reg", "epsilon_policy"],
+        ["eot_shared_or_symmetric_digit_purity"])
+    knn = attach(runs.knn, files[2], ["mode", "magnitude", "corruption_seed", "k"],
+        ["shared_symmetric_correct_class_neighbor_fraction", "mutual_symmetric_correct_class_neighbor_fraction"])
+    return replace(runs, affinity=affinity, knn=knn)
+
+
 def preflight(
     variant: str, *, source_root: Path, output_dir: Path, run_root: Path | None = None
 ) -> SyntheticRuns:
@@ -327,6 +364,7 @@ def preflight(
     )
     if runs.variant != variant:
         raise ValueError("Requested variant differs from selected run")
+    runs = with_symmetric_graph_purity(runs)
     mnist_directory(source_root)
     for directory in runs.run_dirs.values():
         if not audit_path(directory).is_file():

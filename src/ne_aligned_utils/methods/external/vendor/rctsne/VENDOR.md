@@ -22,7 +22,7 @@ Only the `fitsne/` half of that repository is here. Its `ctsne/` directory imple
 | `fast_ctsne_upstream.py` | `fitsne/fast_ctsne.py` | byte-identical copy, used only by the equality test |
 | `UPSTREAM_README.md` | `fitsne/README.md` | their build and usage notes, unedited |
 | `LICENSE` | repository root | the MIT notice for the repository as a whole |
-| `data/synthetic_dataset.csv` | `experiments/synthetic/` | 1500 x 10, used by `scripts/analyse/verify_rctsne.py` |
+| `data/synthetic_dataset.csv` | `experiments/synthetic/` | 1500 x 10, kept for reference; no code reads it |
 | `data/wandb_synthetic_results.csv` | `experiments/synthetic/` | their published scores for that dataset |
 
 **`src/winlibs/` is needed even off Windows.** `sptree.cpp`, `tsne.cpp` and `nbodyfft.cpp` each
@@ -138,9 +138,9 @@ takes a directory argument.
 ### Patch 2 -- the binary is named, not derived
 
 Upstream resolves `os.path.dirname(os.path.realpath(__file__)) + "/bin/fast_ctsne"` (line 389).
-The patched driver takes a command list, which `rctsne_subprocess.rctsne_command()` builds from
+The patched driver takes a command list, which `external/rctsne.py:rctsne_command()` builds from
 `NE_ALIGNED_RCTSNE_BIN` with `shlex.split`, the same convention as
-`r_subprocess.rscript_command` and `multimap_subprocess.multimap_python_command`. This is also
+`external/r.py:rscript_command` and `external/multimap.py:multimap_python_command`. This is also
 what lets `tests/mock_rctsne_binary.py` stand in for the binary.
 
 ### Patch 3 -- a real error on failure
@@ -149,7 +149,7 @@ Upstream catches `CalledProcessError`, prints "t-SNE did not execute correctly",
 the end of the function, so a failed run **returns `None`** and looks like a successful one to the
 caller. In a sweep that would land as a `TypeError` somewhere downstream, or worse, as a silently
 skipped task. The patched driver raises `FastCtsneError` carrying the captured output;
-`rctsne_subprocess` re-raises it as `RcTsneSubprocessError`. The exception type is defined in the
+`external/rctsne.py` re-raises it as `RcTsneSubprocessError`. The exception type is defined in the
 vendored module itself so that file still imports nothing from this package.
 
 Nothing else in `fast_ctsne.py` changes. In particular the binary `.dat` layout is theirs, field

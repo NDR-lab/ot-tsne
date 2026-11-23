@@ -37,9 +37,6 @@ METRIC_DIRECTION: dict[str, int] = {
     "kbet_score": +1,
     "kmeans_rand_index": +1,
     "kmeans_adjusted_rand_index": +1,
-    "concordance_score": +1,
-    "cross_concordance_score": +1,
-    "foscttm_score": -1,
 }
 
 #: Metric families receive equal weight in family-weighted aggregates.
@@ -407,6 +404,73 @@ def _check_statistic(statistic: str) -> str:
     return statistic
 
 
+#: Columns that hold a run's settings. Rows that differ in any of them come from different runs
+#: and are never averaged together. ``method_settings`` holds every method setting as one JSON
+#: string; the device changes timings rather than results, but is still kept apart.
+SETTING_COLUMNS: tuple[str, ...] = (
+    "rel_reg",
+    "effective_k",
+    "graph_symmetrization",
+    "knndiag_symmetrization",
+    "transport",
+    "rel_reg_m",
+    "backend",
+    "device",
+    "method_settings",
+)
+
+
+def seed_group_keys(rows: pd.DataFrame) -> list[str]:
+    """Columns that identify one run's seeds: dataset, method and every setting column present."""
+    return ["dataset", "method", *(c for c in SETTING_COLUMNS if c in rows.columns)]
+
+
+def check_seed_groups(rows: pd.DataFrame, keys: Sequence[str]) -> None:
+    """Each run holds each seed once, and every run holds the same seeds.
+
+    A seed seen twice in one group means rows from two runs share every recorded setting, so
+    their average would silently mix them. Unequal seed sets make averages over different runs.
+    """
+    if "seed" not in rows.columns:
+        raise ValueError(
+            "rows need a 'seed' column, so each seed average can be checked to cover each seed once"
+        )
+    seeds = rows.groupby(list(keys), dropna=False)["seed"]
+    size, unique = seeds.size(), seeds.nunique()
+    repeated = size[size != unique]
+    if not repeated.empty:
+        raise ValueError(
+            "these groups hold the same seed more than once, so rows from different runs would be "
+            "averaged together. Record the setting that tells them apart, or select one run "
+            f"first:\n{repeated.rename('rows').reset_index().head(10)}"
+        )
+    sets = seeds.agg(lambda values: tuple(sorted(values)))
+    if sets.nunique() > 1:
+        raise ValueError(
+            "runs hold different seeds, so their averages are over different numbers of runs: "
+            f"{dict(sets.value_counts())}"
+        )
+
+
+def check_one_configuration(grouped: pd.DataFrame) -> None:
+    """One configuration per (dataset, method, rel_reg) inside a ranking.
+
+    Seed averages are per configuration. If a method still has two in one ranking cell, it would
+    compete twice under one name; the caller must choose (for example with ``effective_k``).
+    """
+    cell = ["dataset", "method", "rel_reg"]
+    clash = grouped[grouped.duplicated(cell, keep=False)]
+    if clash.empty:
+        return
+    settings = [c for c in SETTING_COLUMNS if c in clash.columns and c != "rel_reg"]
+    differing = [c for c in settings if clash.groupby(cell, dropna=False)[c].nunique().gt(1).any()]
+    examples = clash[[*cell, *differing]].drop_duplicates().head(10)
+    raise ValueError(
+        f"some methods have several configurations in one ranking cell; they differ in "
+        f"{differing}. Select one configuration before ranking:\n{examples}"
+    )
+
+
 def _expand_non_rel_reg_methods(
     rows: pd.DataFrame, rel_reg_values: Sequence[float]
 ) -> pd.DataFrame:
@@ -471,12 +535,16 @@ def rank_within(
     metrics: Sequence[str] = RANK_METRICS,
     methods: Sequence[str] | None = None,
     datasets: Sequence[str] | None = None,
-    rel_reg_values: Sequence[float] = SHARED_REL_REG,
-    effective_k: float | None = 15.0,
+    rel_reg_values: Sequence[float],
+    effective_k: float | None,
     tie_tolerance: float | str | None = None,
 ) -> pd.DataFrame:
     """Average seeds and rank methods within each ``(dataset, rel_reg, metric)`` cell.
 
+    ``rel_reg_values`` and ``effective_k`` choose the configuration that competes; there are no
+    defaults, so nothing is filtered unseen. ``effective_k=None`` keeps every k, and a method that
+    then has two k values in one cell is an error rather than an average. Seeds are averaged per
+    run (dataset, method and every setting column); see :func:`check_seed_groups`.
     Metric direction determines ordering; best rank is 1 and ties average occupied ranks.
     ``tie_tolerance`` accepts an absolute value or ``"seed_std"``; None uses exact ties.
     Return long-form values, seed spread, ranks, competitor counts, and resolved tolerances.
@@ -496,19 +564,17 @@ def rank_within(
     if not metrics:
         raise ValueError("none of the requested metrics are present in the input frame")
 
-    # step 1: mean over seeds. The spread over seeds is carried alongside the mean because it is
-    # the only available measure of what a difference in step 2 is worth.
-    keys = ["dataset", "method", "rel_reg"]
-    means = frame.groupby(keys, dropna=False)[list(metrics)].mean().reset_index()
-    stds = (
-        frame.groupby(keys, dropna=False)[list(metrics)]
-        .std(ddof=1)
-        .rename(columns={m: f"{m}{_STD_SUFFIX}" for m in metrics})
-        .reset_index()
-    )
-    grouped = means.merge(stds, on=keys, how="left")
+    # step 1: mean over seeds, per run. The spread over seeds is carried alongside the mean because
+    # it is the only available measure of what a difference in step 2 is worth.
+    run_keys = seed_group_keys(frame)
+    check_seed_groups(frame, run_keys)
+    runs = frame.groupby(run_keys, dropna=False)[list(metrics)]
+    stds = runs.std(ddof=1).rename(columns={m: f"{m}{_STD_SUFFIX}" for m in metrics})
+    grouped = pd.concat([runs.mean(), stds], axis=1).reset_index()
     grouped = _expand_non_rel_reg_methods(grouped, rel_reg_values)
     grouped = grouped[grouped["rel_reg"].isin([float(e) for e in rel_reg_values])]
+    check_one_configuration(grouped)
+    keys = ["dataset", "method", "rel_reg"]
 
     long = grouped.melt(
         id_vars=keys,
@@ -816,6 +882,10 @@ __all__ = [
     "STATISTICS",
     "SYNTHETIC_DATASETS",
     "TREE_METHODS",
+    "SETTING_COLUMNS",
+    "check_one_configuration",
+    "check_seed_groups",
+    "seed_group_keys",
     "aggregate_ranks",
     "bootstrap_aggregate_ranks",
     "coverage_matrix",

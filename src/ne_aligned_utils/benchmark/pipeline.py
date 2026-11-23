@@ -23,18 +23,23 @@ from ne_aligned_utils.benchmark.sweep.config import (
     COUNT_NORMALIZED_METHODS,
     LEGACY_COUNT_LIBRARY_SIZE,
     config_token,
+    format_rel_reg,
+    format_token,
     resolve_task_output_path,
 )
 from ne_aligned_utils.benchmark.sweep.registry import (
     DIAGONAL_CONSTRUCTIONS as DIAGONALS,
     EPS_K_METHODS,
     INTERMEDIATE_DIMENSION_KEYS,
+    KNNDIAG_SYMMETRIZATION_METHODS,
     OT_PLAN_METHODS,
+    SYMMETRIZATION_METHODS,
+    UOT_METHODS,
     VISUALIZED_METHODS,
     input_kind_for_method,
     representation_family,
 )
-from ne_aligned_utils.config import ROOT, thread_env
+from ne_aligned_utils.config import DEFAULT_INIT_JITTER, ROOT, thread_env
 
 DEFAULT_MANIFEST = ROOT / "configs" / "benchmark.toml"
 
@@ -88,10 +93,23 @@ def scientific_method_settings(manifest: dict[str, Any], method: str) -> dict[st
         result[INTERMEDIATE_DIMENSION_KEYS[method]] = 50
     if method in OT_PLAN_METHODS:
         result.update(
-            ot_initialization=settings["ot_init"],
+            # Only OT-tSNE starts from this init. EOT's layouts always start from random
+            # coordinates, so their run ids must not move with the setting.
+            ot_initialization=settings["ot_init"] if method in EPS_K_METHODS else "random",
             ot_tolerance=float(settings["ot_tolerance"]),
             ot_max_iterations=int(settings["ot_max_iterations"]),
         )
+        # Absent from older manifests, whose run ids must not change.
+        if "ot_init_jitter" in settings:
+            result["ot_init_jitter"] = float(settings["ot_init_jitter"])
+        # Only OT-tSNE's spectral blocks use the plan SVD. Absent from older manifests,
+        # whose run ids must not change; those ran the full SVD (see ot_svd_task_args).
+        if method == "ot" and "ot_svd_solver" in settings:
+            result["ot_svd_solver"] = str(settings["ot_svd_solver"])
+            result["ot_svd_directions"] = int(settings["ot_svd_directions"])
+    # Absent from older manifests, whose run ids must not change; those ran rliger's default.
+    if method in LIGER_METHODS and "liger_n_cores" in settings:
+        result["liger_n_cores"] = int(settings["liger_n_cores"])
     if method == "ref":
         result.update(
             reference_pca_dimension=50,
@@ -111,6 +129,138 @@ def scientific_method_settings(manifest: dict[str, Any], method: str) -> dict[st
             beta=float(settings["rc_tsne_beta"]),
         )
     return result
+
+
+#: SVD of manifests written before the solver was a setting: every direction.
+LEGACY_OT_SVD_SOLVER = "full"
+
+
+def ot_svd_task_args(settings: dict[str, Any]) -> list[str]:
+    """Command-line flags for OT-tSNE's plan SVD. Manifests without the setting ran the full
+    SVD, so they get it explicitly and still reproduce under the newer command-line default."""
+    solver = str(settings.get("ot_svd_solver", LEGACY_OT_SVD_SOLVER))
+    args = ["--svd-solver", solver]
+    if "ot_svd_directions" in settings:
+        args.extend(["--svd-directions", str(int(settings["ot_svd_directions"]))])
+    return args
+
+
+#: Benchmark methods that run the current LIGER and take its core setting.
+LIGER_METHODS = ("liger-2d", "liger-50")
+
+
+def liger_cores_task_args(method: str, settings: dict[str, Any]) -> list[str]:
+    """Command-line flag for LIGER's iNMF cores. Manifests without the setting get none, so
+    they run at rliger's default of 2 cores, as they did."""
+    if method in LIGER_METHODS and "liger_n_cores" in settings:
+        return ["--liger-n-cores", str(int(settings["liger_n_cores"]))]
+    return []
+
+
+def _present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, float) and np.isnan(value):
+        return False
+    return str(value) != ""
+
+
+def _number(value: Any) -> str:
+    return f"{float(value):g}"
+
+
+def configuration_label(
+    method: str,
+    *,
+    rel_reg: Any = None,
+    effective_k: Any = None,
+    graph_symmetrization: Any = None,
+    knndiag_symmetrization: Any = None,
+    rel_reg_m: Any = None,
+    method_settings: dict[str, Any] | None = None,
+) -> str:
+    """A short readable name for the settings that define a run.
+
+    It names only what tells runs of the same method apart: the swept OT settings, and the method
+    settings that define an arm (MultiMAP native or matched-k, the rc-tsne beta, a non-random
+    OT-tSNE initialization). The device is
+    left out, since it changes timings rather than results; readers still group by it. The full
+    settings are in the ``method_settings`` column.
+    """
+    parts = [method]
+    if _present(rel_reg):
+        parts.append(f"rel_reg={_number(rel_reg)}")
+    if _present(effective_k):
+        parts.append(f"k={int(float(effective_k))}")
+    if method in SYMMETRIZATION_METHODS and _present(graph_symmetrization):
+        parts.append(f"sym={graph_symmetrization}")
+    if method in KNNDIAG_SYMMETRIZATION_METHODS and _present(knndiag_symmetrization):
+        parts.append(f"knndiag_sym={knndiag_symmetrization}")
+    if method in UOT_METHODS and _present(rel_reg_m):
+        parts.append(f"rel_reg_m={_number(rel_reg_m)}")
+    settings = method_settings or {}
+    if method == "multimap" and "native_profile" in settings:
+        native = bool(settings["native_profile"])
+        parts.append("native" if native else f"k={int(settings['n_neighbors'])}")
+    if method == "rc-tsne" and "beta" in settings:
+        parts.append(f"beta={_number(settings['beta'])}")
+    # Only a non-random init is named, so the benchmark's own labels stay as they were.
+    if method in EPS_K_METHODS and settings.get("ot_initialization", "random") != "random":
+        parts.append(f"init={settings['ot_initialization']}")
+        jitter = float(settings.get("ot_init_jitter", DEFAULT_INIT_JITTER))
+        if jitter != DEFAULT_INIT_JITTER:
+            parts.append(f"jitter={_number(jitter)}")
+    return " ".join(parts)
+
+
+def task_configuration_label(task: Task) -> str:
+    return configuration_label(
+        task.method,
+        rel_reg=task.rel_reg,
+        effective_k=task.effective_k,
+        graph_symmetrization=task.graph_symmetrization,
+        knndiag_symmetrization=task.knndiag_symmetrization,
+        rel_reg_m=task.rel_reg_m,
+        method_settings=task.method_settings,
+    )
+
+
+def with_run_settings(metrics: Any, task_metadata: Any) -> Any:
+    """``metrics`` with ``method_settings`` and ``configuration`` on every row it can resolve.
+
+    Tables written by ``finalize`` already carry both. Older ones get them from
+    ``task_metadata.csv`` through ``arm_id``; a row whose arm is not listed there (for example one
+    swapped in from a supplementary tree) keeps empty values. Returns a copy.
+    """
+    import pandas as pd
+
+    frame = metrics.copy()
+    if "method_settings" not in frame.columns:
+        frame["method_settings"] = pd.Series(np.nan, index=frame.index, dtype=object)
+    frame["method_settings"] = frame["method_settings"].astype(object)
+    missing = frame["method_settings"].isna()
+    if missing.any() and {"arm_id", "method_settings"} <= set(task_metadata.columns):
+        by_arm = task_metadata.drop_duplicates("arm_id").set_index("arm_id")["method_settings"]
+        frame.loc[missing, "method_settings"] = frame.loc[missing, "arm_id"].map(by_arm)
+    if "configuration" not in frame.columns:
+        frame["configuration"] = pd.Series(np.nan, index=frame.index, dtype=object)
+    frame["configuration"] = frame["configuration"].astype(object)
+    unlabelled = frame["configuration"].isna() & frame["method_settings"].notna()
+
+    def label(row: pd.Series) -> str:
+        return configuration_label(
+            str(row["method"]),
+            rel_reg=row.get("rel_reg"),
+            effective_k=row.get("effective_k"),
+            graph_symmetrization=row.get("graph_symmetrization"),
+            knndiag_symmetrization=row.get("knndiag_symmetrization"),
+            rel_reg_m=row.get("rel_reg_m"),
+            method_settings=json.loads(str(row["method_settings"])),
+        )
+
+    if unlabelled.any():
+        frame.loc[unlabelled, "configuration"] = frame.loc[unlabelled].apply(label, axis=1)
+    return frame
 
 
 @dataclass(frozen=True)
@@ -183,7 +333,8 @@ def preprocessing_state(
         if allow_pending:
             return "PENDING_PREPROCESSING", "PENDING_FIXED_SAMPLE"
         raise FileNotFoundError(
-            f"{path} is missing. Build it with scripts/prepare/build_dataset.py first."
+            f"{path} is missing. Prepare the dataset first: "
+            f"uv run python scripts/prepare_data.py {dataset}"
         )
     prep = json.loads(path.read_text())
     prep_hash = str(prep["preprocessing_hash"])
@@ -287,6 +438,8 @@ def expand_tasks(
     dataset_filter: str | None = None,
     experiment_filter: str | None = None,
     method_filter: str | None = None,
+    rel_reg_filter: float | None = None,
+    effective_k_filter: int | None = None,
     profile_name: str | None = None,
     device_filter: str | None = None,
     include_disabled: bool = False,
@@ -378,6 +531,26 @@ def expand_tasks(
                                                 },
                                             )
                                         )
+    return _filter_grid_point(
+        tasks, rel_reg_filter=rel_reg_filter, effective_k_filter=effective_k_filter
+    )
+
+
+def _filter_grid_point(
+    tasks: list[Task], *, rel_reg_filter: float | None, effective_k_filter: int | None
+) -> list[Task]:
+    """Keep the tasks at one rel_reg and/or one k: one line of the grid, or one point.
+
+    Tasks without that setting are dropped. A value no task has is an error, so a typo cannot
+    select nothing. The kept tasks are the very tasks of the full grid (same run_id and file).
+    """
+    for name, value in (("rel_reg", rel_reg_filter), ("effective_k", effective_k_filter)):
+        if value is None:
+            continue
+        available = sorted({getattr(task, name) for task in tasks} - {None})
+        if value not in available:
+            raise ValueError(f"no selected task has {name}={value!r}; the grid has {available}.")
+        tasks = [task for task in tasks if getattr(task, name) == value]
     return tasks
 
 
@@ -390,6 +563,32 @@ def result_base(manifest: dict[str, Any], manifest_hash: str) -> Path:
 
 def arm_dir(manifest: dict[str, Any], task: Task) -> Path:
     return result_base(manifest, task.manifest_hash) / task.dataset / task.experiment / task.arm_id
+
+
+def _experiment(manifest: dict[str, Any], task: Task) -> dict[str, Any]:
+    return next(item for item in manifest["experiments"] if item["name"] == task.experiment)
+
+
+def point_suffix(manifest: dict[str, Any], task: Task) -> str:
+    """Suffix of the aggregate and metrics files of the task's arm.
+
+    Empty unless the experiment sets ``aggregate_per_point``. Then every (rel_reg, k) point gets
+    its own ``aggregate--rel_reg_<r>__k_<k>.npz`` and ``metrics--...csv``, so any subset of the grid
+    can be aggregated and scored, and later runs reuse the points already done.
+    """
+    if not _experiment(manifest, task).get("aggregate_per_point", False):
+        return ""
+    rel_reg = "na" if task.rel_reg is None else format_token(format_rel_reg(task.rel_reg))
+    effective_k = "na" if task.effective_k is None else format_token(task.effective_k)
+    return f"--rel_reg_{rel_reg}__k_{effective_k}"
+
+
+def aggregate_path(manifest: dict[str, Any], task: Task) -> Path:
+    return arm_dir(manifest, task) / f"aggregate{point_suffix(manifest, task)}.npz"
+
+
+def arm_metrics_path(manifest: dict[str, Any], task: Task) -> Path:
+    return arm_dir(manifest, task) / f"metrics{point_suffix(manifest, task)}.csv"
 
 
 def common_cli(manifest: dict[str, Any], task: Task) -> list[str]:
@@ -424,8 +623,6 @@ def common_cli(manifest: dict[str, Any], task: Task) -> list[str]:
         str(settings["perplexity"]),
         "--n-neighbors",
         str(settings["n_neighbors"]),
-        "--init",
-        str(settings["ot_init"]),
         "--tol",
         str(settings["ot_tolerance"]),
         "--max-iter",
@@ -441,10 +638,18 @@ def common_cli(manifest: dict[str, Any], task: Task) -> list[str]:
         "--knndiag-symmetrization",
         task.knndiag_symmetrization,
     ]
+    if task.method in EPS_K_METHODS:
+        # Only OT-tSNE takes the init setting; every other method refuses a non-random one.
+        args.extend(["--init", str(settings["ot_init"])])
     if "tsne_early_exaggeration_iter" in settings:
         args.extend(
             ["--tsne-early-exaggeration-iter", str(settings["tsne_early_exaggeration_iter"])]
         )
+    if "ot_init_jitter" in settings:
+        args.extend(["--init-jitter", str(settings["ot_init_jitter"])])
+    if task.method == "ot":
+        args.extend(ot_svd_task_args(settings))
+    args.extend(liger_cores_task_args(task.method, settings))
     # Older manifests lack the setting and ran with the selected-gene divisor; pass it
     # explicitly so they still reproduce under the newer command-line default.
     count_library_size = settings.get("count_library_size", LEGACY_COUNT_LIBRARY_SIZE)
@@ -511,6 +716,10 @@ def task_command(manifest: dict[str, Any], task: Task) -> list[str]:
         command.extend(["--rel-reg", repr(task.rel_reg)])
     if task.effective_k is not None:
         command.extend(["--effective-k", str(task.effective_k)])
+    if _experiment(manifest, task).get("reuse_ot_cache", False) and task.method == "ot":
+        # Tasks that differ only in k or seed share the plan and its SVD (methods/ot_cache.py).
+        cache_dir = result_base(manifest, task.manifest_hash) / "ot_cache" / task.dataset
+        command.extend(["--ot-cache-dir", str(cache_dir)])
     if task.method == "multimap":
         command.append(
             "--multimap-native"
@@ -644,18 +853,34 @@ def run_tasks(manifest: dict[str, Any], tasks: list[Task]) -> None:
 
 
 def selection_name(
-    dataset_filter: str | None, experiment_filter: str | None, device_filter: str | None
+    dataset_filter: str | None,
+    experiment_filter: str | None,
+    device_filter: str | None,
+    rel_reg_filter: float | None = None,
+    effective_k_filter: int | None = None,
 ) -> str | None:
-    """File stem of a filtered selection, or ``None`` for the whole benchmark."""
-    if dataset_filter is None and experiment_filter is None and device_filter is None:
+    """File stem of a filtered selection, or ``None`` for the whole benchmark.
+
+    The rel_reg and k filters are appended only when given, so other names are unchanged.
+    """
+    if (
+        dataset_filter is None
+        and experiment_filter is None
+        and device_filter is None
+        and rel_reg_filter is None
+        and effective_k_filter is None
+    ):
         return None
-    return "--".join(
-        (
-            dataset_filter or "all-datasets",
-            experiment_filter or "all-experiments",
-            device_filter or "all-devices",
-        )
-    )
+    parts = [
+        dataset_filter or "all-datasets",
+        experiment_filter or "all-experiments",
+        device_filter or "all-devices",
+    ]
+    if rel_reg_filter is not None:
+        parts.append(f"rel_reg_{format_token(format_rel_reg(rel_reg_filter))}")
+    if effective_k_filter is not None:
+        parts.append(f"k_{format_token(effective_k_filter)}")
+    return "--".join(parts)
 
 
 def write_task_metadata(
@@ -665,6 +890,8 @@ def write_task_metadata(
     dataset_filter: str | None = None,
     experiment_filter: str | None = None,
     device_filter: str | None = None,
+    rel_reg_filter: float | None = None,
+    effective_k_filter: int | None = None,
 ) -> Path:
     """Write a readable view of canonical task metadata without creating a second authority.
 
@@ -709,14 +936,16 @@ def write_task_metadata(
             }
         )
     base = result_base(manifest, tasks[0].manifest_hash)
-    selection = selection_name(dataset_filter, experiment_filter, device_filter)
+    selection = selection_name(
+        dataset_filter, experiment_filter, device_filter, rel_reg_filter, effective_k_filter
+    )
     output = (
         base / "task_metadata.csv"
         if selection is None
         else base / "task_metadata" / f"{selection}.csv"
     )
     output.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = list(rows[0]) if rows else ["dataset", "experiment", "method", "run_id"]
+    fieldnames = _union_fieldnames(rows) or ["dataset", "experiment", "method", "run_id"]
     with output.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -725,10 +954,12 @@ def write_task_metadata(
     return output
 
 
-def arm_groups(tasks: list[Task]) -> list[list[Task]]:
-    groups: dict[tuple[str, str, str], list[Task]] = {}
+def arm_groups(tasks: list[Task], manifest: dict[str, Any] | None = None) -> list[list[Task]]:
+    """Tasks aggregated together: one arm, or one point of an arm with per-point aggregation."""
+    groups: dict[tuple[str, str, str, str], list[Task]] = {}
     for task in tasks:
-        groups.setdefault((task.dataset, task.experiment, task.arm_id), []).append(task)
+        suffix = "" if manifest is None else point_suffix(manifest, task)
+        groups.setdefault((task.dataset, task.experiment, task.arm_id, suffix), []).append(task)
     return [groups[key] for key in sorted(groups)]
 
 
@@ -736,7 +967,7 @@ def aggregate_tasks(manifest: dict[str, Any], tasks: list[Task]) -> None:
     threads = int(manifest["resources"]["cpu"]["threads"])
     env = dict(os.environ)
     env.update(thread_env(threads))
-    for group in arm_groups(tasks):
+    for group in arm_groups(tasks, manifest):
         task = group[0]
         rel_regs = sorted(
             {item.rel_reg for item in group if item.rel_reg is not None}, reverse=True
@@ -755,7 +986,7 @@ def aggregate_tasks(manifest: dict[str, Any], tasks: list[Task]) -> None:
             "--n-seeds",
             str(len({item.method_seed for item in group})),
             "--output-cache",
-            str(arm_dir(manifest, task) / "aggregate.npz"),
+            str(aggregate_path(manifest, task)),
             "--replace",
         ]
         if rel_regs:
@@ -765,6 +996,11 @@ def aggregate_tasks(manifest: dict[str, Any], tasks: list[Task]) -> None:
         subprocess.run(command, cwd=ROOT, env=env, check=True)
 
 
+def _union_fieldnames(rows: list[dict[str, Any]]) -> list[str]:
+    """Every column of every row, in first-seen order; methods may add their own columns."""
+    return list(dict.fromkeys(key for row in rows for key in row))
+
+
 def score_tasks(
     manifest: dict[str, Any],
     tasks: list[Task],
@@ -772,16 +1008,18 @@ def score_tasks(
     dataset_filter: str | None = None,
     experiment_filter: str | None = None,
     device_filter: str | None = None,
+    rel_reg_filter: float | None = None,
+    effective_k_filter: int | None = None,
 ) -> None:
     combined: list[dict[str, str]] = []
     threads = int(manifest["resources"]["cpu"]["threads"])
     env = dict(os.environ)
     env.update(thread_env(threads))
     env["LOKY_MAX_CPU_COUNT"] = str(threads)
-    for group in arm_groups(tasks):
+    canonical_rel_reg = float(manifest["grid"]["canonical_rel_reg"])
+    for group in arm_groups(tasks, manifest):
         task = group[0]
-        directory = arm_dir(manifest, task)
-        metrics_path = directory / "metrics.csv"
+        metrics_path = arm_metrics_path(manifest, task)
         subprocess.run(
             [
                 sys.executable,
@@ -789,7 +1027,7 @@ def score_tasks(
                 "ne_aligned_utils.benchmark.sweep",
                 "score-aggregate",
                 "--aggregate-cache",
-                str(directory / "aggregate.npz"),
+                str(aggregate_path(manifest, task)),
                 "--output-csv",
                 str(metrics_path),
                 "--methods",
@@ -801,6 +1039,11 @@ def score_tasks(
         )
         with metrics_path.open(newline="") as handle:
             for row in csv.DictReader(handle):
+                # Label each row by its own rel_reg and k: an arm may hold several grid points.
+                row_rel_reg = float(row["rel_reg"]) if _present(row.get("rel_reg")) else None
+                row_effective_k = (
+                    int(float(row["effective_k"])) if _present(row.get("effective_k")) else None
+                )
                 row.update(
                     {
                         "experiment": task.experiment,
@@ -811,9 +1054,9 @@ def score_tasks(
                         "pipeline": task.pipeline,
                         "rel_reg_role": (
                             "canonical"
-                            if task.rel_reg == float(manifest["grid"]["canonical_rel_reg"])
+                            if row_rel_reg == canonical_rel_reg
                             else "sensitivity"
-                            if task.rel_reg is not None
+                            if row_rel_reg is not None
                             else "not_applicable"
                         ),
                         "graph_symmetrization": task.graph_symmetrization,
@@ -823,16 +1066,29 @@ def score_tasks(
                         else "balanced",
                         "rel_reg_m": "" if task.rel_reg_m is None else str(task.rel_reg_m),
                         "device": task.device,
+                        # Every setting of the run, so rows that differ anywhere stay apart.
+                        "method_settings": json.dumps(task.method_settings, sort_keys=True),
+                        "configuration": configuration_label(
+                            task.method,
+                            rel_reg=row_rel_reg,
+                            effective_k=row_effective_k,
+                            graph_symmetrization=task.graph_symmetrization,
+                            knndiag_symmetrization=task.knndiag_symmetrization,
+                            rel_reg_m=task.rel_reg_m,
+                            method_settings=task.method_settings,
+                        ),
                     }
                 )
                 combined.append(row)
     if not combined:
         return
     base = result_base(manifest, tasks[0].manifest_hash)
-    selection = selection_name(dataset_filter, experiment_filter, device_filter)
+    selection = selection_name(
+        dataset_filter, experiment_filter, device_filter, rel_reg_filter, effective_k_filter
+    )
     output = base / "metrics.csv" if selection is None else base / "metrics" / f"{selection}.csv"
     output.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = list(combined[0])
+    fieldnames = _union_fieldnames(combined)
     with output.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -883,16 +1139,16 @@ def validate_tasks(manifest: dict[str, Any], tasks: list[Task]) -> None:
         except (OSError, ValueError, KeyError):
             invalid_tasks.append(path)
 
-    groups = arm_groups(tasks)
+    groups = arm_groups(tasks, manifest)
     missing_aggregates = [
-        arm_dir(manifest, group[0]) / "aggregate.npz"
+        aggregate_path(manifest, group[0])
         for group in groups
-        if not (arm_dir(manifest, group[0]) / "aggregate.npz").is_file()
+        if not aggregate_path(manifest, group[0]).is_file()
     ]
     missing_metrics = [
-        arm_dir(manifest, group[0]) / "metrics.csv"
+        arm_metrics_path(manifest, group[0])
         for group in groups
-        if not (arm_dir(manifest, group[0]) / "metrics.csv").is_file()
+        if not arm_metrics_path(manifest, group[0]).is_file()
     ]
     print(
         f"Selected {len(tasks)} tasks in {len(groups)} arms: "
@@ -928,6 +1184,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", default=None)
     parser.add_argument("--experiment", default=None)
     parser.add_argument("--method", default=None)
+    # One line or point of the rel_reg x k grid; the tasks are those of the full grid.
+    parser.add_argument("--rel-reg", type=float, default=None)
+    parser.add_argument("--effective-k", type=int, default=None)
     parser.add_argument("--profile", choices=("smoke",), default=None)
     parser.add_argument("--device", choices=("cpu", "cuda"), default=None)
     parser.add_argument("--include-disabled", action="store_true")
@@ -952,11 +1211,20 @@ def main() -> None:
         dataset_filter=args.dataset,
         experiment_filter=args.experiment,
         method_filter=args.method,
+        rel_reg_filter=args.rel_reg,
+        effective_k_filter=args.effective_k,
         profile_name=args.profile,
         device_filter=args.device,
         include_disabled=args.include_disabled,
         allow_pending=args.allow_unprepared or args.command == "plan",
         persist_sample=args.command in {"run", "run-local", "run-aggregate", "reproduce"},
+    )
+    selection = dict(
+        dataset_filter=args.dataset,
+        experiment_filter=args.experiment,
+        device_filter=args.device,
+        rel_reg_filter=args.rel_reg,
+        effective_k_filter=args.effective_k,
     )
     if args.command == "plan":
         plan = format_plan(manifest, tasks)
@@ -969,9 +1237,7 @@ def main() -> None:
         write_task_metadata(
             manifest,
             tasks,
-            dataset_filter=args.dataset,
-            experiment_filter=args.experiment,
-            device_filter=args.device,
+            **selection,
         )
     elif args.command == "run-aggregate":
         run_tasks(manifest, tasks)
@@ -982,9 +1248,7 @@ def main() -> None:
         score_tasks(
             manifest,
             tasks,
-            dataset_filter=args.dataset,
-            experiment_filter=args.experiment,
-            device_filter=args.device,
+            **selection,
         )
     elif args.command == "validate":
         validate_tasks(manifest, tasks)
@@ -992,17 +1256,13 @@ def main() -> None:
         score_tasks(
             manifest,
             tasks,
-            dataset_filter=args.dataset,
-            experiment_filter=args.experiment,
-            device_filter=args.device,
+            **selection,
         )
         validate_tasks(manifest, tasks)
         write_task_metadata(
             manifest,
             tasks,
-            dataset_filter=args.dataset,
-            experiment_filter=args.experiment,
-            device_filter=args.device,
+            **selection,
         )
     elif args.command == "reproduce":
         run_tasks(manifest, tasks)
@@ -1010,17 +1270,13 @@ def main() -> None:
         score_tasks(
             manifest,
             tasks,
-            dataset_filter=args.dataset,
-            experiment_filter=args.experiment,
-            device_filter=args.device,
+            **selection,
         )
         validate_tasks(manifest, tasks)
         write_task_metadata(
             manifest,
             tasks,
-            dataset_filter=args.dataset,
-            experiment_filter=args.experiment,
-            device_filter=args.device,
+            **selection,
         )
 
 

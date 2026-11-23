@@ -99,6 +99,9 @@ def _load_task_embedding(
             "source_path": str(np.asarray(cache["source_path"]).item()),
             "n_genes": int(np.asarray(cache["n_genes"]).item()),
         }
+        if "init_used" in cache.files:
+            # The initialization the t-SNE layout actually started from.
+            provenance["init_used"] = str(np.asarray(cache["init_used"]).item())
     if embedding.ndim != 2 or embedding.shape[0] != int(n_total):
         raise ValueError(f"{path} has embedding shape {embedding.shape}, expected {n_total} rows.")
     return embedding, provenance
@@ -234,6 +237,26 @@ def _store_aggregate_method(
     payload[f"{stem}_input_source"] = provenance["input_source"]
     payload[f"{stem}_source_path"] = provenance["source_path"]
     payload[f"{stem}_n_genes"] = provenance["n_genes"]
+    if "init_used" in provenance:
+        payload[f"{stem}_init_used"] = provenance["init_used"]
+
+
+def _check_init_used(payload: dict[str, Any], method: str, backend: str, init: str) -> None:
+    """Refuse an OT-tSNE aggregate whose tasks started from another initialization.
+
+    The cache-wide ``init`` labels every scored row, so it must be what the layouts used.
+    Task files without ``init_used`` predate its recording and ran with random coordinates.
+    """
+    if backend != DEFAULT_BACKEND:
+        # UMAP applies its own initialization and records it as umap_init.
+        return
+    stem = cache_keys(method, backend)[0].removesuffix("_embeddings")
+    used = str(payload.get(f"{stem}_init_used", "random"))
+    if used != init:
+        raise ValueError(
+            f"{method} tasks started from init {used!r}, but this aggregate is for init "
+            f"{init!r}. Rerun those tasks; do not score them under the wrong initialization."
+        )
 
 
 #: Metadata that must agree before aggregate arrays can be merged.
@@ -297,7 +320,7 @@ def _merge_previous_methods(payload: dict[str, Any], output_path: Path) -> dict[
                 )
                 return payload
         kept = []
-        provenance_suffixes = ("_input_source", "_source_path", "_n_genes")
+        provenance_suffixes = ("_input_source", "_source_path", "_n_genes", "_init_used")
         for key in previous.files:
             if key.endswith(("_embeddings", "_paths", *provenance_suffixes)) and key not in payload:
                 payload[key] = previous[key]
@@ -458,6 +481,7 @@ def aggregate(args: argparse.Namespace) -> None:
             sample_indices0=sample_indices0,
             sample_indices1=sample_indices1,
         )
+        _check_init_used(payload, method, backend, str(payload["init"]))
 
     if not getattr(args, "replace", False):
         payload = _merge_previous_methods(payload, output_path)
