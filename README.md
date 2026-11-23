@@ -22,11 +22,6 @@ cd ot-tsne
 uv sync --locked
 ```
 
-The Python package is `ne_aligned_utils`. Run the tests with `uv run python -m pytest`. Tests of
-the external R, MultiMAP and rc-tSNE tools run only after their setup (see the
-[reproduction guide](reproduction/README.md)) and with `NE_ALIGNED_TEST_REAL_R=1`,
-`NE_ALIGNED_TEST_REAL_MULTIMAP=1` or `NE_ALIGNED_TEST_REAL_RCTSNE=1`. GPU tests, and tests that
-read completed MNIST runs, skip when those are absent.
 
 ## Usage example
 
@@ -130,8 +125,8 @@ The [example script](examples/ncov.py) generates the figure below.
 
 ### Using your own data
 
-OT-tSNE can be used with any data represented in a shared feature space;
-it is not restricted to single-cell data. Both batches may contain different numbers of observations.
+OT-tSNE can be used with any data represented in a shared feature space.
+It is not restricted to single-cell data. Both batches may contain different numbers of observations.
 The current implementation supports two batches and uses Euclidean distances. Paired observations and labels are not required. 
 
 
