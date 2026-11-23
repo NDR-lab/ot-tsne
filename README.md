@@ -165,49 +165,27 @@ change cross-batch matching and the resulting embeddings:
 | [Orthogonal batch effects](notebooks/mnist_orthogonal_batch_effect.ipynb) | Perturbations in PCA-tail directions, comparing the original and signal-projected representations through transport diagnostics, neighbor graphs, and embeddings. |
 | [Parallel batch effects](notebooks/mnist_parallel_batch_effect.ipynb) | Opposite shifts along the leading principal component, using constant or digit-dependent shift magnitudes. |
 
-Both are saved with the figures of the paper's run. They use OT-tSNE's default `rel_reg = 1`.
-Set these switches in the configuration cell:
-
-- `RUN_EXPERIMENT = True` computes the experiment into `results/`; add `SMOKE = True` for a quick,
-  reduced check. With `False`, the notebook loads the run computed before with the same settings.
-- `BUILD_FROM_MNIST = True` samples the two MNIST batches and fits the PCA, downloading MNIST into
-  `data/torchvision` if it is missing. It checks the result against the recorded construction in
-  `data/mnist/`. With `False`, the batches are loaded from that recorded construction.
-
-Two more notebooks draw
-paper figures: [method_figure.ipynb](notebooks/method_figure.ipynb) (the method schematic) and
-[reproduce_paper_figures.ipynb](notebooks/reproduce_paper_figures.ipynb) (benchmark figures from
-data exported by `scripts/export_handoff_data.py`; see the [reproduction guide](reproduction/README.md)).
-
 ## Repository structure
 
 ```text
 src/ne_aligned_utils/
-  methods/                 OT-tSNE and the baseline methods
-    ot_methods.py            OT-tSNE variants (the public entry point)
-    ot_transport.py          Entropic optimal-transport plan
-    ot_affinity.py           Affinity construction and neighbor selection
-    ot_graph.py              Graph initialization and t-SNE optimization
-    external/                Methods run in R, a second Python, or a vendored binary
-  evaluation/              Integration metrics, ranks and hubness diagnostics
-  benchmark/               Benchmark manifest, task planning, running and scoring
-  data/                    Dataset preparation
-  experiments/             MNIST batch-effect experiments
-  paper/                   Paper figures from completed results
-configs/                   Benchmark manifests (main run, init ablation, sensitivity grid)
-envs/                      Pinned R, MultiMAP and rc-tSNE environments
-scripts/                   Data preparation, benchmark, setup and figure commands
+  methods/
+    ot_methods.py          OT-tSNE variants
+    ot_transport.py        Entropic optimal-transport plan
+    ot_affinity.py         Affinity construction and neighbor selection
+    ot_graph.py            Graph initialization and t-SNE optimization
 examples/                  Runnable toy and nCoV examples
-notebooks/                 MNIST walkthroughs and figure notebooks
-data/nCoV/preprocessed/    Prepared nCoV example inputs
-data/mnist/                Recorded MNIST batch construction for the walkthroughs
-tests/                     Test suite (uv run python -m pytest)
+notebooks/                 Synthetic experiments and figures
+data/nCoV/preprocessed/     Prepared nCoV example inputs
 ```
 
 ## Reproducing the paper
 
 The benchmark and all figures can be rerun from this repository. See the
 [reproduction guide](reproduction/README.md) for environments, data, runs and figures.
+
+## Citation
+
 
 ## License
 
